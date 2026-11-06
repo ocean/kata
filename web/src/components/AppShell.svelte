@@ -31,6 +31,7 @@
     projectKataWorkspaceView,
   } from '../lib/kata/authority'
   import {
+    boardColumnLimitsFromMetadata,
     boardColumnsFromMetadata,
     unionBoardColumns,
     type BoardColumnID,
@@ -142,9 +143,17 @@
     onCompleteBoardIssue?:
       | ((issue: KataTaskSummary, request: KataTaskCloseRequest) => Promise<boolean>)
       | undefined
-    /** Saves a project board's columns to that project's metadata. */
+    /** Saves a project board's columns and their limits to that project's metadata. */
     onSaveBoardColumns?:
-      | ((projectUID: string | undefined, columns: string[]) => Promise<boolean>)
+      | ((
+          projectUID: string | undefined,
+          columns: string[],
+          limits: Record<string, number>,
+        ) => Promise<boolean>)
+      | undefined
+    /** Creates an issue in a project, with a board column's label when it has one. */
+    onCreateBoardIssue?:
+      | ((projectID: number, title: string, label: string | undefined) => Promise<boolean>)
       | undefined
     /** Loads the next page of the board's closed issues from the server. */
     onShowMoreBoardDone?: (() => void) | undefined
@@ -203,6 +212,7 @@
     onCompleteBoardIssue = async () => false,
     onSaveBoardColumns = async () => false,
     onShowMoreBoardDone = undefined,
+    onCreateBoardIssue = undefined,
   }: Props = $props()
 
   let connectionNow = $state(Date.now())
@@ -323,6 +333,10 @@
       : unionBoardColumns(projection.projects.map((project) => project.metadata)),
   )
 
+  // Limits belong to a project board; the all-projects board shows none.
+  let boardLimits = $derived(
+    selectedProject ? boardColumnLimitsFromMetadata(selectedProject.metadata) : {},
+  )
   let boardIssues = $derived(
     selectedProject
       ? projection.issues.filter((issue) => issue.project_uid === selectedProject!.uid)
@@ -977,6 +991,14 @@
       doneTotal={snapshot.closed_total}
       onShowMoreDone={onShowMoreBoardDone}
       compact={preferences.boardCompact}
+      limits={boardLimits}
+      onAddCard={selectedProject &&
+      onCreateBoardIssue &&
+      !readOnly &&
+      snapshot.capabilities.writable &&
+      !scopedAuthority
+        ? (title, label) => onCreateBoardIssue(selectedProject!.id, title, label)
+        : undefined}
       collapsedColumns={preferences.collapsedBoardColumns}
       onToggleColumn={toggleBoardColumn}
     />
@@ -986,7 +1008,8 @@
     columns={boardColumns}
     suggestions={boardLabelSuggestions}
     savedWhere={`Saved to ${selectedProject?.name ?? 'this project'} for everyone who opens its board.`}
-    onSave={(columns) => onSaveBoardColumns(selectedProject?.uid, columns)}
+    limits={boardLimits}
+    onSave={(columns, limits) => onSaveBoardColumns(selectedProject?.uid, columns, limits)}
     onClose={() => {
       columnsEditorOpen = false
     }}

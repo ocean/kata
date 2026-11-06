@@ -2028,6 +2028,109 @@ describe('App', () => {
     expect(await mutation.json()).toEqual({ actor: 'kata-web', patch: { role: 'inbox' } })
   })
 
+  it('adds a board card to the project with its column label', async () => {
+    history.replaceState(null, '', '/kata?scope=01J00000000000000000000002&layout=board#direct=1')
+    sessionStorage.setItem(
+      'kata.web.session.v1',
+      JSON.stringify({ session: 'tab-session', csrf: 'tab-csrf' }),
+    )
+    const accepted = snapshot()
+    const requests: Request[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request =
+          input instanceof Request
+            ? input
+            : new Request(new URL(String(input), window.location.origin), init)
+        requests.push(request)
+        if (request.method === 'POST' && request.url.endsWith('/api/v1/projects/7/issues')) {
+          return new Response(JSON.stringify({ issue: accepted.collection![0], changed: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify(accepted), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', ETag: `"snapshot-${requests.length}"` },
+        })
+      }),
+    )
+
+    render(App)
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Add card to in-progress' }))
+    const input = screen.getByRole('textbox', { name: 'New card in in-progress' })
+    await fireEvent.input(input, { target: { value: 'Write the board docs' } })
+    await fireEvent.keyDown(input, { key: 'Enter' })
+
+    const create = await waitFor(() => {
+      const found = requests.find(
+        (request) => request.method === 'POST' && request.url.endsWith('/api/v1/projects/7/issues'),
+      )
+      expect(found).toBeDefined()
+      return found!
+    })
+    // Identity-mode authority attributes the write itself, so no actor is sent.
+    expect(await create.json()).toEqual({
+      title: 'Write the board docs',
+      labels: ['in-progress'],
+    })
+    expect(create.headers.get('Idempotency-Key')).toBeTruthy()
+  })
+
+  it('saves board columns and their limits in one project metadata update', async () => {
+    history.replaceState(null, '', '/kata?scope=01J00000000000000000000002&layout=board#direct=1')
+    sessionStorage.setItem(
+      'kata.web.session.v1',
+      JSON.stringify({ session: 'tab-session', csrf: 'tab-csrf' }),
+    )
+    const accepted = snapshot()
+    const requests: Request[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request =
+          input instanceof Request
+            ? input
+            : new Request(new URL(String(input), window.location.origin), init)
+        requests.push(request)
+        if (request.method === 'POST' && request.url.endsWith('/api/v1/projects/7/metadata')) {
+          return new Response(
+            JSON.stringify({ changed: true, project: accepted.catalog[0]!.project }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        return new Response(JSON.stringify(accepted), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', ETag: `"snapshot-${requests.length}"` },
+        })
+      }),
+    )
+
+    render(App)
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Edit board columns' }))
+    await fireEvent.input(screen.getByRole('spinbutton', { name: 'Card limit for in-progress' }), {
+      target: { value: '3' },
+    })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save columns' }))
+
+    const patch = await waitFor(() => {
+      const found = requests.find(
+        (request) =>
+          request.method === 'POST' && request.url.endsWith('/api/v1/projects/7/metadata'),
+      )
+      expect(found).toBeDefined()
+      return found!
+    })
+    expect(await patch.json()).toEqual({
+      actor: 'kata-web',
+      patch: { board_columns: ['in-progress'], board_column_limits: { 'in-progress': 3 } },
+    })
+    expect(patch.headers.get('If-Match')).toBe('"rev-2"')
+  })
+
   it('changes the Inbox project from New task through one designation request', async () => {
     history.replaceState(null, '', '/kata#direct=1')
     sessionStorage.setItem(

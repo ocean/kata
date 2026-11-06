@@ -218,6 +218,91 @@ describe('AppShell', () => {
       )
     })
 
+    test('adds a card from a project board column with that column label', async () => {
+      const current = snapshot()
+      current.catalog[0]!.project.metadata = { board_columns: ['review'] }
+      const onCreateBoardIssue = vi.fn(async () => true)
+      render(AppShell, {
+        props: {
+          route: { kind: 'kata', projectUID, graph: false, board: true, filters },
+          snapshot: current,
+          loading: false,
+          ...mutationProps(),
+          onNavigate: vi.fn(),
+          onCreateProject: vi.fn(async () => ({ changed: true })),
+          onCreateBoardIssue,
+        },
+      })
+
+      await fireEvent.click(screen.getByRole('button', { name: 'Add card to review' }))
+      const input = screen.getByRole('textbox', { name: 'New card in review' })
+      await fireEvent.input(input, { target: { value: 'Draft the announcement' } })
+      await fireEvent.keyDown(input, { key: 'Enter' })
+
+      expect(onCreateBoardIssue).toHaveBeenCalledWith(7, 'Draft the announcement', 'review')
+    })
+
+    test('offers no add-card on the all-projects board or without write access', () => {
+      render(AppShell, {
+        props: {
+          route: { kind: 'kata', view: 'all-open', graph: false, board: true, filters },
+          snapshot: snapshot(),
+          loading: false,
+          ...mutationProps(),
+          onNavigate: vi.fn(),
+          onCreateProject: vi.fn(async () => ({ changed: true })),
+          onCreateBoardIssue: vi.fn(async () => true),
+        },
+      })
+      expect(screen.queryByRole('button', { name: /^Add card/ })).toBeNull()
+      cleanup()
+
+      const readOnly = snapshot()
+      readOnly.capabilities.writable = false
+      render(AppShell, {
+        props: {
+          route: { kind: 'kata', projectUID, graph: false, board: true, filters },
+          snapshot: readOnly,
+          loading: false,
+          readOnly: true,
+          ...mutationProps({ canMutate: false }),
+          onNavigate: vi.fn(),
+          onCreateProject: vi.fn(async () => ({ changed: true })),
+          onCreateBoardIssue: vi.fn(async () => true),
+        },
+      })
+      expect(screen.queryByRole('button', { name: /^Add card/ })).toBeNull()
+    })
+
+    test('reads column limits from project metadata and saves edited limits with the columns', async () => {
+      const current = snapshot()
+      current.catalog[0]!.project.metadata = {
+        board_columns: ['review'],
+        board_column_limits: { review: 2 },
+      }
+      const onSaveBoardColumns = vi.fn(async () => true)
+      render(AppShell, {
+        props: {
+          route: { kind: 'kata', projectUID, graph: false, board: true, filters },
+          snapshot: current,
+          loading: false,
+          ...mutationProps(),
+          onNavigate: vi.fn(),
+          onCreateProject: vi.fn(async () => ({ changed: true })),
+          onSaveBoardColumns,
+        },
+      })
+
+      expect(screen.getByRole('region', { name: 'review, 0 cards, limit 2' })).toBeTruthy()
+      await fireEvent.click(screen.getByRole('button', { name: 'Edit board columns' }))
+      await fireEvent.input(screen.getByRole('spinbutton', { name: 'Card limit for review' }), {
+        target: { value: '4' },
+      })
+      await fireEvent.click(screen.getByRole('button', { name: 'Save columns' }))
+
+      expect(onSaveBoardColumns).toHaveBeenCalledWith(projectUID, ['review'], { review: 4 })
+    })
+
     test('keeps the board when another project is chosen in the sidebar', async () => {
       const onNavigate = vi.fn()
       render(AppShell, {

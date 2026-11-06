@@ -6,7 +6,12 @@
 
   import { commentRetryIdentity } from './lib/kata/commentRetry'
   import type { KataCommentReplyIntent, KataTaskSummary } from './lib/kata/types'
-  import { boardColumnsMetadataKey, defaultDoneLimit, type BoardMovePlan } from './lib/kata/board'
+  import {
+    boardColumnLimitsMetadataKey,
+    boardColumnsMetadataKey,
+    defaultDoneLimit,
+    type BoardMovePlan,
+  } from './lib/kata/board'
   import AppShell from './components/AppShell.svelte'
   import KataDaemonSwitcher from './components/KataDaemonSwitcher.svelte'
   import LaunchHint from './components/LaunchHint.svelte'
@@ -891,6 +896,33 @@
     )
   }
 
+  // A card added from a board column: created in that project, carrying the
+  // column's label so it lands in the column it was added to.
+  let pendingBoardCreate: { identity: string; key: string } | undefined
+  async function createBoardIssue(
+    projectID: number,
+    title: string,
+    label: string | undefined,
+  ): Promise<boolean> {
+    const identity = JSON.stringify([projectID, title, label ?? null])
+    const create =
+      pendingBoardCreate?.identity === identity
+        ? pendingBoardCreate
+        : { identity, key: globalThis.crypto.randomUUID() }
+    pendingBoardCreate = create
+    const accepted = await runMutation(
+      { draft: title, createKey: create.key, actionKind: 'issue_created' },
+      (context) =>
+        createIssueRequest(
+          { projectId: String(projectID) },
+          context.body({ title, ...(label ? { labels: [label] } : {}) }, requestActor),
+          { headers: { 'Idempotency-Key': create.key, 'X-Kata-Surface': 'web' } },
+        ),
+    )
+    if (accepted) pendingBoardCreate = undefined
+    return accepted
+  }
+
   function showMoreBoardDone(): void {
     boardClosedLimit = Math.min(boardClosedLimit + defaultDoneLimit, 1000)
     void refreshSnapshot(false)
@@ -903,6 +935,7 @@
   async function saveBoardColumns(
     projectUID: string | undefined,
     columns: string[],
+    limits: Record<string, number>,
   ): Promise<boolean> {
     // Only project boards have their own columns; the all-projects board
     // shows the union of them.
@@ -914,7 +947,10 @@
     return runMutation({ draft: columns, revision: `"rev-${project.revision}"` }, (context) =>
       patchProjectMetadata(
         { projectId: project.id },
-        { actor: requestActor, patch: { [boardColumnsMetadataKey]: columns } },
+        {
+          actor: requestActor,
+          patch: { [boardColumnsMetadataKey]: columns, [boardColumnLimitsMetadataKey]: limits },
+        },
         { headers: context.headers },
       ),
     )
@@ -1398,6 +1434,7 @@
         onCompleteBoardIssue={completeBoardIssue}
         onSaveBoardColumns={saveBoardColumns}
         onShowMoreBoardDone={showMoreBoardDone}
+        onCreateBoardIssue={createBoardIssue}
       />
     {/if}
   {/if}

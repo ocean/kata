@@ -12,6 +12,7 @@ function renderEditor(overrides: Partial<Props> = {}) {
     columns: ['in-progress', 'review'],
     suggestions: ['bug', 'blocked', 'review'],
     savedWhere: 'Saved to example-project for everyone who opens its board.',
+    limits: {},
     onSave: vi.fn(async () => true),
     onClose: vi.fn(),
     ...overrides,
@@ -37,7 +38,7 @@ describe('BoardColumnsEditor', () => {
     await fireEvent.keyDown(input, { key: 'Enter' })
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Save columns' }))
 
-    expect(props.onSave).toHaveBeenCalledWith(['in-progress', 'review', 'blocked'])
+    expect(props.onSave).toHaveBeenCalledWith(['in-progress', 'review', 'blocked'], {})
     expect(props.onClose).toHaveBeenCalled()
   })
 
@@ -49,7 +50,7 @@ describe('BoardColumnsEditor', () => {
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Remove in-progress' }))
     await fireEvent.click(within(dialog).getByRole('button', { name: 'Save columns' }))
 
-    expect(props.onSave).toHaveBeenCalledWith(['review'])
+    expect(props.onSave).toHaveBeenCalledWith(['review'], {})
   })
 
   it('refuses a label that is already a column', async () => {
@@ -80,5 +81,37 @@ describe('BoardColumnsEditor', () => {
 
     expect(props.onClose).not.toHaveBeenCalled()
     expect(listedColumns(dialog)).toEqual(['in-progress'])
+  })
+})
+
+describe('BoardColumnsEditor limits', () => {
+  afterEach(() => cleanup())
+
+  it('saves a limit per label column and drops cleared ones', async () => {
+    const { props, dialog } = renderEditor({ limits: { 'in-progress': 5 } })
+
+    const inProgress = within(dialog).getByRole('spinbutton', {
+      name: 'Card limit for in-progress',
+    })
+    expect((inProgress as HTMLInputElement).value).toBe('5')
+    await fireEvent.input(inProgress, { target: { value: '' } })
+    await fireEvent.input(
+      within(dialog).getByRole('spinbutton', { name: 'Card limit for review' }),
+      {
+        target: { value: '3' },
+      },
+    )
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Save columns' }))
+
+    expect(props.onSave).toHaveBeenCalledWith(['in-progress', 'review'], { review: 3 })
+  })
+
+  it('drops the limit of a removed column', async () => {
+    const { props, dialog } = renderEditor({ limits: { review: 2, 'in-progress': 4 } })
+
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Remove review' }))
+    await fireEvent.click(within(dialog).getByRole('button', { name: 'Save columns' }))
+
+    expect(props.onSave).toHaveBeenCalledWith(['in-progress'], { 'in-progress': 4 })
   })
 })

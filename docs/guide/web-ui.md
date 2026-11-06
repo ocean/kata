@@ -116,17 +116,30 @@ its own. Subtasks still move on their own.
 
 Move a card by dragging it, from its **Move to…** menu, or by focusing it and
 pressing **Alt+←** or **Alt+→**. Arrow keys move focus between cards and
-columns. Select a card to open its full detail in a side drawer; **Esc** closes
-it.
+columns. A moved card flashes briefly where it lands, and a banner offers
+**Undo** for ten seconds; **Ctrl+Z** (**⌘Z** on macOS) undoes the last move
+too, except inside a text field. Undo is not offered for a card that moved out
+of Done, because closing it again needs the completion form. Select a card to
+open its full detail in a side drawer; on a phone the drawer fills the screen.
+**Esc**, the close button, or the browser's back gesture closes it.
+
+On a project board, **Add card** at the foot of Open and each label column
+creates an issue in that project. A card added to a label column carries that
+label, so it lands in the column. Press **Enter** to add and keep typing the
+next card, or **Esc** to close the form. The board across all projects does
+not offer **Add card**, because it has no single project to add to.
 
 **Edit board columns** (the columns icon beside the filters) adds, orders, and
-removes label columns. A project board saves its columns to the project's
-`board_columns` metadata, so everyone who opens that project's board sees the
-same columns; this needs a credential that can change project settings. New
-boards start with one `in-progress` column. The board across all projects shows
-every project's label columns together, each label once, in project order; open
-a project to change its columns. Read-only and stale sessions show the board but
-do not move cards.
+removes label columns, and sets an optional card limit for each. When a column
+holds more cards than its limit, its count shows as, for example, `9 / 8` in
+amber, and its accessible name says it is over its limit. Limits only flag the
+column; moves are never blocked. A project board saves its columns to the
+project's `board_columns` metadata and its limits to `board_column_limits`, so
+everyone who opens that project's board sees the same columns; this needs a
+credential that can change project settings. New boards start with one
+`in-progress` column. The board across all projects shows every project's label
+columns together, each label once, in project order; open a project to change
+its columns. Read-only and stale sessions show the board but do not move cards.
 
 The **Card density** switch beside the filters chooses comfortable cards or
 compact cards, which show only the ID, priority, and title on one line. Done and

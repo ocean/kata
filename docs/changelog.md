@@ -18,7 +18,9 @@ All notable changes to kata, grouped by release. Versioned releases start with
   loads closed issues 30 at a time from the daemon, so projects with long
   histories open quickly. Switch to compact one-line cards, collapse Done or
   empty columns to narrow strips, and see every project's columns together on
-  the all-projects board. See
+  the all-projects board. Add cards straight into a column, set per-column card
+  limits that turn the count amber when exceeded, and undo a move from the
+  banner or with Ctrl+Z. See
   [Work on a board](guide/web-ui.md#work-on-a-board).
 - Give coding agents a shorter kata contract. The text that hooks inject,
   `kata init --with-agents` writes, and the MCP `workflow` guide serves now

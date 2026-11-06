@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   boardColumnsFromMetadata,
   unionBoardColumns,
+  boardColumnLimitsFromMetadata,
   buildBoard,
   defaultBoardColumns,
   normalizeBoardColumns,
@@ -264,5 +265,27 @@ describe('unionBoardColumns', () => {
 
   it('falls back to the default columns when there are no projects', () => {
     expect(unionBoardColumns([])).toEqual(['in-progress'])
+  })
+})
+
+describe('boardColumnLimitsFromMetadata', () => {
+  it('reads whole-number limits for label columns', () => {
+    expect(
+      boardColumnLimitsFromMetadata({ board_column_limits: { review: 3, 'in-progress': 5 } }),
+    ).toEqual({ review: 3, 'in-progress': 5 })
+  })
+
+  it('drops limits that are not whole numbers from 1 to 999', () => {
+    expect(
+      boardColumnLimitsFromMetadata({
+        board_column_limits: { a: 0, b: -2, c: 2.5, d: '4', e: 1000, f: 999 },
+      }),
+    ).toEqual({ f: 999 })
+  })
+
+  it('treats missing or malformed metadata as no limits', () => {
+    expect(boardColumnLimitsFromMetadata(undefined)).toEqual({})
+    expect(boardColumnLimitsFromMetadata({ board_column_limits: [3] })).toEqual({})
+    expect(boardColumnLimitsFromMetadata({ board_column_limits: null })).toEqual({})
   })
 })

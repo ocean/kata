@@ -3,6 +3,8 @@
 // are labels; moving a card swaps the column label the issue carries.
 
 export const boardColumnsMetadataKey = 'board_columns'
+export const boardColumnLimitsMetadataKey = 'board_column_limits'
+export const maxBoardColumnLimit = 999
 export const defaultBoardColumns: readonly string[] = Object.freeze(['in-progress'])
 export const defaultDoneLimit = 30
 
@@ -65,6 +67,28 @@ export function boardColumnsFromMetadata(metadata: Record<string, unknown> | und
     return [...defaultBoardColumns]
   }
   return normalizeBoardColumns(value)
+}
+
+/** Per-column card limits keyed by label: whole numbers from 1 to 999. */
+export function boardColumnLimitsFromMetadata(
+  metadata: Record<string, unknown> | undefined,
+): Record<string, number> {
+  const value = metadata?.[boardColumnLimitsMetadataKey]
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
+  const limits: Record<string, number> = {}
+  for (const [label, limit] of Object.entries(value)) {
+    if (isBoardColumnLimit(limit)) limits[label] = limit
+  }
+  return limits
+}
+
+export function isBoardColumnLimit(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= maxBoardColumnLimit
+  )
 }
 
 /**

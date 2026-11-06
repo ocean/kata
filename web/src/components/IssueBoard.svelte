@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    Button,
     FlashBanner,
     KbdBadge,
     Menu,
@@ -17,6 +18,7 @@
   import EllipsisIcon from '@lucide/svelte/icons/ellipsis'
   import ListTreeIcon from '@lucide/svelte/icons/list-tree'
   import OctagonAlertIcon from '@lucide/svelte/icons/octagon-alert'
+  import PlusIcon from '@lucide/svelte/icons/plus'
   import { onDestroy } from 'svelte'
   import { SvelteMap, SvelteSet } from 'svelte/reactivity'
 
@@ -56,6 +58,10 @@
     collapsedColumns?: readonly string[] | undefined
     /** Collapses or expands a column; collapse is offered for Done and empty columns. */
     onToggleColumn?: ((columnID: BoardColumnID) => void) | undefined
+    /** Card limits for label columns, keyed by label. */
+    limits?: Readonly<Record<string, number>> | undefined
+    /** Creates an issue in a column: with that column's label, or none for Open. */
+    onAddCard?: ((title: string, label: string | undefined) => Promise<boolean>) | undefined
   }
 
   let {
@@ -73,6 +79,8 @@
     compact = false,
     collapsedColumns = [],
     onToggleColumn = undefined,
+    limits = {},
+    onAddCard = undefined,
   }: Props = $props()
 
   const uid = $props.id()
@@ -303,7 +311,72 @@
   function columnColor(column: BoardColumn<KataTaskSummary>): string {
     if (column.kind === 'open') return 'var(--text-muted)'
     if (column.kind === 'done') return 'var(--accent-green)'
+    const limit = columnLimit(column)
+    if (limit !== undefined && column.total > limit) return 'var(--accent-amber)'
     return hashColor(column.label ?? '')
+  }
+
+  // The column whose add-card form is open, its draft, and whether it is saving.
+  let addingTo = $state<BoardColumnID | null>(null)
+  let addDraft = $state('')
+  let addSaving = $state(false)
+
+  function openAddCard(column: BoardColumn<KataTaskSummary>): void {
+    addingTo = column.id
+    addDraft = ''
+    queueMicrotask(() => addInput()?.focus())
+  }
+
+  function addInput(): HTMLTextAreaElement | null | undefined {
+    return boardElement?.querySelector<HTMLTextAreaElement>('textarea.add-card-input')
+  }
+
+  function closeAddCard(column: BoardColumn<KataTaskSummary>): void {
+    addingTo = null
+    addDraft = ''
+    queueMicrotask(() =>
+      boardElement?.querySelector<HTMLElement>(`[data-add-card="${column.id}"]`)?.focus(),
+    )
+  }
+
+  async function submitAddCard(column: BoardColumn<KataTaskSummary>): Promise<void> {
+    const title = addDraft.trim()
+    if (!title || addSaving || !onAddCard) return
+    addSaving = true
+    try {
+      if (await onAddCard(title, column.label)) {
+        // Stay open so several cards can be added in a row.
+        addDraft = ''
+        announcement = `Added ${title} to ${column.title}.`
+      } else {
+        announcement = `Could not add ${title}.`
+      }
+    } finally {
+      addSaving = false
+      queueMicrotask(() => addInput()?.focus())
+    }
+  }
+
+  function handleAddKeydown(event: KeyboardEvent, column: BoardColumn<KataTaskSummary>): void {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      void submitAddCard(column)
+    } else if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      closeAddCard(column)
+    }
+  }
+
+  function columnLimit(column: BoardColumn<KataTaskSummary>): number | undefined {
+    return column.kind === 'label' && column.label !== undefined ? limits[column.label] : undefined
+  }
+
+  function columnLabel(column: BoardColumn<KataTaskSummary>): string {
+    const limit = columnLimit(column)
+    const base = `${column.title}, ${cardCount(column.total)}`
+    if (limit === undefined) return base
+    return column.total > limit ? `${base}, over its limit of ${limit}` : `${base}, limit ${limit}`
   }
 
   function cardCount(count: number): string {
@@ -345,9 +418,10 @@
       <section
         class="board-column"
         class:collapsed
+        class:over-limit={columnLimit(column) !== undefined && column.total > columnLimit(column)!}
         class:drop-target={dropTarget === column.id && draggingUID !== null}
         class:column--done={column.kind === 'done'}
-        aria-label={`${column.title}, ${cardCount(column.total)}`}
+        aria-label={columnLabel(column)}
         style:--column-color={columnColor(column)}
         ondragover={(event) => handleDragOver(event, column)}
         ondragleave={(event) => handleDragLeave(event, column)}
@@ -368,7 +442,11 @@
               </button>
             {/if}
             <span class="column-dot" aria-hidden="true"></span>
-            <span class="column-count" aria-hidden="true">{column.total}</span>
+            <span class="column-count" aria-hidden="true"
+              >{column.total}{#if columnLimit(column) !== undefined}&nbsp;/ {columnLimit(
+                  column,
+                )}{/if}</span
+            >
             <h2 id={headingID} class="column-title column-title--vertical" title={column.title}>
               {column.title}
             </h2>
@@ -377,7 +455,11 @@
           <header class="column-header">
             <span class="column-dot" aria-hidden="true"></span>
             <h2 id={headingID} class="column-title" title={column.title}>{column.title}</h2>
-            <span class="column-count" aria-hidden="true">{column.total}</span>
+            <span class="column-count" aria-hidden="true"
+              >{column.total}{#if columnLimit(column) !== undefined}&nbsp;/ {columnLimit(
+                  column,
+                )}{/if}</span
+            >
             {#if onToggleColumn && canCollapse}
               <button
                 type="button"
@@ -523,6 +605,43 @@
               </li>
             {/each}
           </ul>
+        {/if}
+        {#if !collapsed && onAddCard && column.kind !== 'done'}
+          {#if addingTo === column.id}
+            <div class="add-card">
+              <textarea
+                class="add-card-input"
+                aria-label={`New card in ${column.title}`}
+                placeholder="Card title — Enter to add, Esc to close"
+                rows="2"
+                bind:value={addDraft}
+                disabled={addSaving}
+                onkeydown={(event) => handleAddKeydown(event, column)}
+              ></textarea>
+              <div class="add-card-actions">
+                <Button
+                  size="sm"
+                  tone="info"
+                  surface="solid"
+                  label={addSaving ? 'Adding…' : 'Add'}
+                  disabled={addSaving || !addDraft.trim()}
+                  onclick={() => void submitAddCard(column)}
+                />
+                <Button size="sm" label="Cancel" onclick={() => closeAddCard(column)} />
+              </div>
+            </div>
+          {:else}
+            <button
+              type="button"
+              class="column-add"
+              data-add-card={column.id}
+              aria-label={`Add card to ${column.title}`}
+              onclick={() => openAddCard(column)}
+            >
+              <PlusIcon size={13} strokeWidth={2} aria-hidden="true" />
+              <span>Add card</span>
+            </button>
+          {/if}
         {/if}
         {#if !collapsed && column.kind === 'done' && column.total > column.issues.length}
           {@const more = Math.min(defaultDoneLimit, column.total - column.issues.length)}
@@ -1002,6 +1121,75 @@
   @keyframes card-landed {
     from {
       background: color-mix(in srgb, var(--accent-blue) 22%, var(--bg-surface));
+    }
+  }
+
+  /* Over its limit, the header rule (via columnColor) and count turn amber,
+     and the column's accessible name says so, so it is never colour-only. */
+  .board-column.over-limit .column-count {
+    padding: 0 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent-amber) 16%, transparent);
+    color: color-mix(in srgb, var(--accent-amber) 70%, var(--text-primary));
+    font-weight: var(--font-weight-semibold);
+  }
+
+  .column-add {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin: 0 var(--space-3) var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+  }
+
+  .column-add:hover,
+  .column-add:focus-visible {
+    background: var(--bg-surface-hover);
+    color: var(--text-primary);
+  }
+
+  .column-add:focus-visible,
+  .add-card-input:focus {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 1px;
+  }
+
+  .add-card {
+    display: grid;
+    gap: var(--space-2);
+    margin: 0 var(--space-3) var(--space-3);
+  }
+
+  .add-card-input {
+    width: 100%;
+    min-height: 52px;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: var(--font-size-sm);
+    line-height: 1.35;
+    resize: vertical;
+  }
+
+  .add-card-actions {
+    display: flex;
+    gap: var(--space-2);
+  }
+
+  @media (max-width: 640px), (pointer: coarse) {
+    .column-add,
+    .add-card-actions :global(.kit-button) {
+      min-height: 44px;
     }
   }
 

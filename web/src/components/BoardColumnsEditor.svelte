@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { Button, IconButton } from '@kenn-io/kit-ui'
+  import { Button, IconButton, NumberInput } from '@kenn-io/kit-ui'
   import { hashColor } from '@kenn-io/kit-ui/utils/color-hash'
   import ArrowDownIcon from '@lucide/svelte/icons/arrow-down'
   import ArrowUpIcon from '@lucide/svelte/icons/arrow-up'
   import XIcon from '@lucide/svelte/icons/x'
 
-  import { normalizeBoardColumns } from '../lib/kata/board'
+  import { isBoardColumnLimit, maxBoardColumnLimit, normalizeBoardColumns } from '../lib/kata/board'
   import Modal from './Modal.svelte'
 
   interface Props {
@@ -15,17 +15,21 @@
     suggestions: readonly string[]
     /** Where the columns are stored, shown under the list. */
     savedWhere: string
-    onSave: (columns: string[]) => boolean | Promise<boolean>
+    /** Card limits for label columns, keyed by label. */
+    limits?: Readonly<Record<string, number>> | undefined
+    onSave: (columns: string[], limits: Record<string, number>) => boolean | Promise<boolean>
     onClose: () => void
   }
 
-  let { open, columns, suggestions, savedWhere, onSave, onClose }: Props = $props()
+  let { open, columns, suggestions, savedWhere, limits = {}, onSave, onClose }: Props = $props()
 
   const id = $props.id()
   let draft = $state<string[]>([])
   let newLabel = $state('')
   let error = $state('')
   let saving = $state(false)
+  // Limit drafts keyed by label; null means no limit.
+  let limitDrafts = $state<Record<string, number | null>>({})
   let wasOpen = false
 
   $effect(() => {
@@ -33,6 +37,7 @@
       draft = normalizeBoardColumns(columns)
       newLabel = ''
       error = ''
+      limitDrafts = Object.fromEntries(draft.map((label) => [label, limits[label] ?? null]))
     }
     wasOpen = open
   })
@@ -63,11 +68,20 @@
     draft = draft.filter((_, position) => position !== index)
   }
 
+  function draftLimits(): Record<string, number> {
+    const result: Record<string, number> = {}
+    for (const label of draft) {
+      const limit = limitDrafts[label]
+      if (isBoardColumnLimit(limit)) result[label] = limit
+    }
+    return result
+  }
+
   async function save(): Promise<void> {
     if (saving) return
     saving = true
     try {
-      if (await onSave([...draft])) onClose()
+      if (await onSave([...draft], draftLimits())) onClose()
     } finally {
       saving = false
     }
@@ -78,7 +92,8 @@
   <div class="editor">
     <p class="hint">
       Each column between Open and Done is a label. Moving a card swaps its column label; Done
-      closes the issue.
+      closes the issue. A limit is optional: the column's count turns amber when it holds more cards
+      than that.
     </p>
     <ol class="columns" aria-label="Board column order">
       <li class="fixed"><span class="dot" style:--dot="var(--text-muted)"></span>Open</li>
@@ -91,6 +106,21 @@
               <li data-label={label}>
                 <span class="dot" style:--dot={hashColor(label)}></span>
                 <span class="name">{label}</span>
+                <span class="limit">
+                  <NumberInput
+                    size="sm"
+                    min={1}
+                    max={maxBoardColumnLimit}
+                    step={1}
+                    placeholder="No limit"
+                    ariaLabel={`Card limit for ${label}`}
+                    disabled={saving}
+                    value={limitDrafts[label] ?? null}
+                    oninput={(value) => {
+                      limitDrafts = { ...limitDrafts, [label]: value }
+                    }}
+                  />
+                </span>
                 <IconButton
                   size="sm"
                   ariaLabel={`Move ${label} earlier`}
@@ -244,6 +274,11 @@
     color: var(--text-muted);
     font-size: var(--font-size-xs);
     text-align: center;
+  }
+
+  .limit {
+    width: 84px;
+    flex: 0 0 auto;
   }
 
   .add {

@@ -542,3 +542,118 @@ describe('IssueBoard after a move', () => {
     expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull()
   })
 })
+
+describe('IssueBoard column limits', () => {
+  afterEach(() => cleanup())
+
+  it('shows count against limit and flags a column over its limit', () => {
+    const second = task({
+      id: 40,
+      uid: 'u-second',
+      title: 'Second in progress',
+      labels: ['in-progress'],
+    })
+    renderBoard({ issues: [triage, doing, second], limits: { 'in-progress': 1, review: 4 } })
+
+    const inProgress = column('in-progress')
+    expect(inProgress.getAttribute('aria-label')).toBe('in-progress, 2 cards, over its limit of 1')
+    expect(inProgress.classList).toContain('over-limit')
+    expect(inProgress.style.getPropertyValue('--column-color')).toBe('var(--accent-amber)')
+    expect(within(inProgress).getByText('2 / 1')).toBeTruthy()
+
+    const review = column('review')
+    expect(review.getAttribute('aria-label')).toBe('review, 0 cards, limit 4')
+    expect(review.classList).not.toContain('over-limit')
+    expect(within(review).getByText('0 / 4')).toBeTruthy()
+  })
+})
+
+describe('IssueBoard add card', () => {
+  afterEach(() => cleanup())
+
+  it('adds a card to a label column with that label, and stays open for the next one', async () => {
+    const onAddCard = vi.fn(async () => true)
+    renderBoard({ onAddCard })
+
+    await fireEvent.click(
+      within(column('review')).getByRole('button', { name: 'Add card to review' }),
+    )
+    const input = within(column('review')).getByRole('textbox', { name: 'New card in review' })
+    expect(document.activeElement).toBe(input)
+    await fireEvent.input(input, { target: { value: '  Write release notes  ' } })
+    await fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onAddCard).toHaveBeenCalledWith('Write release notes', 'review')
+    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(''))
+    expect(
+      within(column('review')).getByRole('textbox', { name: 'New card in review' }),
+    ).toBeTruthy()
+  })
+
+  it('adds a card to Open without a column label', async () => {
+    const onAddCard = vi.fn(async () => true)
+    renderBoard({ onAddCard })
+
+    await fireEvent.click(within(column('Open')).getByRole('button', { name: 'Add card to Open' }))
+    const input = within(column('Open')).getByRole('textbox', { name: 'New card in Open' })
+    await fireEvent.input(input, { target: { value: 'Plain task' } })
+    await fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onAddCard).toHaveBeenCalledWith('Plain task', undefined)
+  })
+
+  it('keeps the draft when adding fails, and Escape closes the form', async () => {
+    const onAddCard = vi.fn(async () => false)
+    renderBoard({ onAddCard })
+
+    await fireEvent.click(within(column('Open')).getByRole('button', { name: 'Add card to Open' }))
+    const input = within(column('Open')).getByRole('textbox', { name: 'New card in Open' })
+    await fireEvent.input(input, { target: { value: 'Keep me' } })
+    await fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(onAddCard).toHaveBeenCalledOnce())
+    expect((input as HTMLTextAreaElement).value).toBe('Keep me')
+
+    await fireEvent.keyDown(input, { key: 'Escape' })
+    expect(within(column('Open')).queryByRole('textbox')).toBeNull()
+    expect(document.activeElement).toBe(
+      within(column('Open')).getByRole('button', { name: 'Add card to Open' }),
+    )
+  })
+
+  it('offers no add button on Done or without a create handler', () => {
+    renderBoard({ onAddCard: vi.fn(async () => true) })
+    expect(within(column('Done')).queryByRole('button', { name: /^Add card/ })).toBeNull()
+    cleanup()
+
+    renderBoard()
+    expect(screen.queryByRole('button', { name: /^Add card/ })).toBeNull()
+  })
+})
+
+describe('IssueBoard add card during a refresh', () => {
+  afterEach(() => cleanup())
+
+  it('keeps the add form open while moves pause for a snapshot refresh', async () => {
+    const view = render(IssueBoard, {
+      props: {
+        issues: [triage],
+        columns: [],
+        selectedIssueUID: null,
+        showProject: false,
+        onOpenIssue: vi.fn(),
+        onMoveIssue: vi.fn(async () => true),
+        onCompleteIssue: vi.fn(async () => true),
+        onAddCard: vi.fn(async () => true),
+      },
+    })
+    await fireEvent.click(screen.getByRole('button', { name: 'Add card to Open' }))
+    await fireEvent.input(screen.getByRole('textbox', { name: 'New card in Open' }), {
+      target: { value: 'Half typed' },
+    })
+
+    await view.rerender({ moveBlockedReason: 'Changes are paused while Kata connects.' })
+
+    const input = screen.getByRole('textbox', { name: 'New card in Open' }) as HTMLTextAreaElement
+    expect(input.value).toBe('Half typed')
+  })
+})
