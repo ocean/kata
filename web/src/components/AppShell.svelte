@@ -850,7 +850,9 @@
     width="min(780px, 100vw)"
     onclose={closeIssueDrawer}
   >
-    {@render detailPane()}
+    <div class="drawer-detail">
+      {@render detailPane()}
+    </div>
   </DetailDrawer>
 {/if}
 
@@ -1247,6 +1249,16 @@
     min-height: 0;
     display: flex;
     border-left: 1px solid var(--border-default);
+  }
+
+  /* In the board's drawer the detail has no list beside it, so no divider. */
+  .drawer-detail {
+    display: flex;
+    min-height: 100%;
+  }
+
+  .drawer-detail .detail-column {
+    border-left: 0;
   }
 
   .detail-unavailable {

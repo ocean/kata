@@ -1,0 +1,42 @@
+import { expect, test } from './fixtures'
+
+test.use({ trace: 'off' })
+
+test('a card opened on a phone fills the screen with a finger-sized close button', async ({
+  page,
+  kata,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  const credentials = await kata.launch(page)
+  const issue = await kata.seedIssue(page, credentials, { title: 'Phone-sized board card' })
+  await page.goto(`${kata.origin}/kata?scope=${kata.projectUID}&layout=board`)
+
+  await page.getByRole('button', { name: issue.title, exact: true }).click()
+  const drawer = page.getByRole('dialog', { name: 'Issue detail' })
+  await expect(drawer).toBeVisible()
+
+  // Wait for the slide-in animation to finish before measuring.
+  await expect
+    .poll(async () => {
+      const box = await drawer.boundingBox()
+      return box && [box.x, box.y, box.width, box.height].map(Math.round)
+    })
+    .toEqual([0, 0, 390, 844])
+
+  // 44×44 CSS pixels is the minimum comfortable touch target.
+  const close = drawer.getByRole('button', { name: 'Close' })
+  const closeBox = await close.boundingBox()
+  expect(closeBox?.width).toBeGreaterThanOrEqual(44)
+  expect(closeBox?.height).toBeGreaterThanOrEqual(44)
+
+  // The list layout's divider must not show as a stray line inside the drawer.
+  const divider = await drawer
+    .locator('.detail-column')
+    .evaluate((element) => getComputedStyle(element).borderLeftWidth)
+  expect(divider).toBe('0px')
+  // Full screen, the drawer's side-panel edge would also read as a stray line.
+  expect(await drawer.evaluate((element) => getComputedStyle(element).borderLeftWidth)).toBe('0px')
+
+  await close.click()
+  await expect(drawer).toBeHidden()
+})
