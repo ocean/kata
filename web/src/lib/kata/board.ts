@@ -67,6 +67,20 @@ export function boardColumnsFromMetadata(metadata: Record<string, unknown> | und
   return normalizeBoardColumns(value)
 }
 
+/**
+ * Columns for a board that spans projects: every project's label columns, in
+ * project order, each label at its first position. An empty catalog falls back
+ * to the default columns.
+ */
+export function unionBoardColumns(
+  projectMetadata: readonly (Record<string, unknown> | undefined)[],
+): string[] {
+  if (projectMetadata.length === 0) return [...defaultBoardColumns]
+  return normalizeBoardColumns(
+    projectMetadata.flatMap((metadata) => boardColumnsFromMetadata(metadata)),
+  )
+}
+
 export function buildBoard<T extends BoardIssue>(
   issues: readonly T[],
   labels: readonly string[],

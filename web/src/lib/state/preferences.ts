@@ -1,5 +1,3 @@
-import { boardColumnsFromMetadata, defaultBoardColumns } from '../kata/board'
-
 export const preferencesStorageKey = 'kata.preferences.v1'
 
 export interface Preferences {
@@ -8,8 +6,10 @@ export interface Preferences {
   splitDirection: 'horizontal' | 'vertical'
   splitSize: number
   collapsedGroups: string[]
-  /** Board columns for boards that span projects; project boards use project metadata. */
-  boardColumns: string[]
+  /** Board cards show one line each. */
+  boardCompact: boolean
+  /** Board column IDs (such as `done` or `label:review`) shown as narrow strips. */
+  collapsedBoardColumns: string[]
 }
 
 export const defaultPreferences: Preferences = {
@@ -18,7 +18,8 @@ export const defaultPreferences: Preferences = {
   splitDirection: 'vertical',
   splitSize: 420,
   collapsedGroups: [],
-  boardColumns: [...defaultBoardColumns],
+  boardCompact: false,
+  collapsedBoardColumns: [],
 }
 
 export function loadPreferences(storage: Storage = localStorage): Preferences {
@@ -35,7 +36,8 @@ export function loadPreferences(storage: Storage = localStorage): Preferences {
           ? value.splitSize
           : defaultPreferences.splitSize,
       collapsedGroups: stringArray(value.collapsedGroups, []),
-      boardColumns: boardColumnsFromMetadata({ board_columns: value.boardColumns }),
+      boardCompact: value.boardCompact === true,
+      collapsedBoardColumns: stringArray(value.collapsedBoardColumns, []),
     }
   } catch {
     return cloneDefaults()
@@ -64,7 +66,8 @@ export function savePreferences(
         ? current.splitSize
         : defaultPreferences.splitSize,
     collapsedGroups: stringArray(current.collapsedGroups, []),
-    boardColumns: boardColumnsFromMetadata({ board_columns: current.boardColumns }),
+    boardCompact: current.boardCompact === true,
+    collapsedBoardColumns: stringArray(current.collapsedBoardColumns, []),
   }
   storage.setItem(preferencesStorageKey, JSON.stringify(allowed))
 }
@@ -79,7 +82,7 @@ function cloneDefaults(): Preferences {
     ...defaultPreferences,
     columns: [...defaultPreferences.columns],
     collapsedGroups: [...defaultPreferences.collapsedGroups],
-    boardColumns: [...defaultPreferences.boardColumns],
+    collapsedBoardColumns: [...defaultPreferences.collapsedBoardColumns],
   }
 }
 

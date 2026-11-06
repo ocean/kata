@@ -42,15 +42,41 @@ describe('origin-local preferences', () => {
     })
   })
 
-  it('keeps the cross-project board columns in the order the user chose', () => {
+  it('remembers compact board cards and collapsed board columns', () => {
     const storage = new MapStorage()
-    savePreferences({ ...defaultPreferences, boardColumns: ['review', 'doing', 'review'] }, storage)
+    savePreferences(
+      {
+        ...defaultPreferences,
+        boardCompact: true,
+        collapsedBoardColumns: ['done', 'label:review', 'done'],
+      },
+      storage,
+    )
 
-    expect(loadPreferences(storage).boardColumns).toEqual(['review', 'doing'])
+    expect(loadPreferences(storage)).toMatchObject({
+      boardCompact: true,
+      collapsedBoardColumns: ['done', 'label:review'],
+    })
   })
 
-  it('defaults the cross-project board to the in-progress column', () => {
-    expect(loadPreferences(new MapStorage()).boardColumns).toEqual(['in-progress'])
+  it('starts with comfortable cards and every board column open', () => {
+    expect(loadPreferences(new MapStorage())).toMatchObject({
+      boardCompact: false,
+      collapsedBoardColumns: [],
+    })
+  })
+
+  it('ignores malformed board settings', () => {
+    const storage = new MapStorage()
+    storage.setItem(
+      'kata.preferences.v1',
+      JSON.stringify({ boardCompact: 'yes', collapsedBoardColumns: [1, 2] }),
+    )
+
+    expect(loadPreferences(storage)).toMatchObject({
+      boardCompact: false,
+      collapsedBoardColumns: [],
+    })
   })
 
   it('reports degraded origins without copying preference state', () => {

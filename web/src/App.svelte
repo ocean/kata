@@ -904,10 +904,9 @@
     projectUID: string | undefined,
     columns: string[],
   ): Promise<boolean> {
-    if (projectUID === undefined) {
-      updatePreferences({ ...preferences, boardColumns: columns })
-      return true
-    }
+    // Only project boards have their own columns; the all-projects board
+    // shows the union of them.
+    if (projectUID === undefined) return false
     const project = authority?.snapshot?.catalog
       ?.map(({ project }) => project)
       .find((candidate) => candidate.uid === projectUID)

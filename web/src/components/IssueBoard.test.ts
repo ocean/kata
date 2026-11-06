@@ -356,3 +356,78 @@ describe('IssueBoard server-paged Done', () => {
     expect(onShowMoreDone).toHaveBeenCalledOnce()
   })
 })
+
+describe('IssueBoard compact cards', () => {
+  afterEach(() => cleanup())
+
+  it('keeps ID, priority, and title on one line and drops the detail row', () => {
+    renderBoard({ compact: true })
+
+    const card = within(column('in-progress')).getByRole('listitem')
+    expect(within(card).getByText('doi1')).toBeTruthy()
+    expect(within(card).getByText('P1')).toBeTruthy()
+    expect(within(card).getByText('Write the parser')).toBeTruthy()
+    expect(within(card).queryByText('user-b')).toBeNull()
+    expect(within(card).queryByText('bug')).toBeNull()
+    expect(cardButton('Write the parser')).toBeTruthy()
+  })
+})
+
+describe('IssueBoard collapsible columns', () => {
+  afterEach(() => cleanup())
+
+  it('offers to collapse Done and empty columns but not columns holding cards', async () => {
+    const props = renderBoard({ onToggleColumn: vi.fn() })
+
+    expect(within(column('Done')).getByRole('button', { name: 'Collapse Done' })).toBeTruthy()
+    expect(within(column('review')).getByRole('button', { name: 'Collapse review' })).toBeTruthy()
+    expect(within(column('in-progress')).queryByRole('button', { name: /^Collapse/ })).toBeNull()
+    expect(within(column('Open')).queryByRole('button', { name: /^Collapse/ })).toBeNull()
+
+    await fireEvent.click(within(column('Done')).getByRole('button', { name: 'Collapse Done' }))
+    expect(props.onToggleColumn).toHaveBeenCalledWith('done')
+  })
+
+  it('shows a collapsed column as a strip with its count that still takes drops', async () => {
+    const props = renderBoard({ collapsedColumns: ['done'], onToggleColumn: vi.fn() })
+
+    const done = column('Done')
+    expect(done.getAttribute('aria-label')).toBe('Done, 1 card')
+    expect(within(done).queryAllByRole('listitem')).toHaveLength(0)
+    expect(within(done).getByText('1')).toBeTruthy()
+    await fireEvent.click(within(done).getByRole('button', { name: 'Expand Done' }))
+    expect(props.onToggleColumn).toHaveBeenCalledWith('done')
+
+    const transfer = {
+      setData: vi.fn(),
+      getData: () => 'u-triage',
+      effectAllowed: '',
+      dropEffect: '',
+    }
+    await fireEvent.dragStart(within(column('Open')).getByRole('listitem'), {
+      dataTransfer: transfer,
+    })
+    await fireEvent.dragOver(done, { dataTransfer: transfer })
+    await fireEvent.drop(done, { dataTransfer: transfer })
+    expect(screen.getByRole('dialog', { name: 'Complete task' })).toBeTruthy()
+  })
+
+  it('skips collapsed columns when arrow keys move focus across the board', async () => {
+    // A column collapsed while empty stays collapsed after cards arrive.
+    const inReview = task({
+      id: 30,
+      uid: 'u-review',
+      title: 'Hidden in review',
+      labels: ['review'],
+    })
+    renderBoard({
+      issues: [triage, inReview, doing],
+      columns: ['review', 'in-progress'],
+      collapsedColumns: ['label:review'],
+    })
+
+    cardButton('Triage inbox').focus()
+    await fireEvent.keyDown(cardButton('Triage inbox'), { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(cardButton('Write the parser'))
+  })
+})

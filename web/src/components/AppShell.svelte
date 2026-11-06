@@ -10,6 +10,8 @@
     type TypeaheadOption,
   } from '@kenn-io/kit-ui'
   import KanbanIcon from '@lucide/svelte/icons/square-kanban'
+  import Rows2Icon from '@lucide/svelte/icons/rows-2'
+  import Rows4Icon from '@lucide/svelte/icons/rows-4'
   import ListIcon from '@lucide/svelte/icons/list'
   import Columns3Icon from '@lucide/svelte/icons/columns-3'
   import LayoutPanelLeftIcon from '@lucide/svelte/icons/layout-panel-left'
@@ -28,7 +30,12 @@
     defaultKataTaskSearchFilters,
     projectKataWorkspaceView,
   } from '../lib/kata/authority'
-  import { boardColumnsFromMetadata, type BoardMovePlan } from '../lib/kata/board'
+  import {
+    boardColumnsFromMetadata,
+    unionBoardColumns,
+    type BoardColumnID,
+    type BoardMovePlan,
+  } from '../lib/kata/board'
   import { createKataLinkFilters } from '../lib/kata/linkFilters'
   import { normalizeKataUISnapshot } from '../lib/kata/projection'
   import type {
@@ -135,7 +142,7 @@
     onCompleteBoardIssue?:
       | ((issue: KataTaskSummary, request: KataTaskCloseRequest) => Promise<boolean>)
       | undefined
-    /** Saves board columns to a project's metadata, or to this browser without one. */
+    /** Saves a project board's columns to that project's metadata. */
     onSaveBoardColumns?:
       | ((projectUID: string | undefined, columns: string[]) => Promise<boolean>)
       | undefined
@@ -308,9 +315,14 @@
       : undefined
   })
   let boardRoute = $derived(route.board === true && !credentialRoute)
+  // A project board uses its own columns; the all-projects board shows the
+  // union of every project's columns.
   let boardColumns = $derived(
-    selectedProject ? boardColumnsFromMetadata(selectedProject.metadata) : preferences.boardColumns,
+    selectedProject
+      ? boardColumnsFromMetadata(selectedProject.metadata)
+      : unionBoardColumns(projection.projects.map((project) => project.metadata)),
   )
+
   let boardIssues = $derived(
     selectedProject
       ? projection.issues.filter((issue) => issue.project_uid === selectedProject!.uid)
@@ -363,8 +375,18 @@
     selectedProject
       ? (writeBlockedReason ??
           (scopedAuthority ? 'This credential cannot change project settings.' : pendingReason))
-      : undefined,
+      : 'This board combines every project’s columns. Open a project to edit its columns.',
   )
+
+  function toggleBoardColumn(columnID: BoardColumnID): void {
+    const collapsed = preferences.collapsedBoardColumns.includes(columnID)
+    onPreferencesChange({
+      ...preferences,
+      collapsedBoardColumns: collapsed
+        ? preferences.collapsedBoardColumns.filter((id) => id !== columnID)
+        : [...preferences.collapsedBoardColumns, columnID],
+    })
+  }
 
   function navigate(next: AppRoute): void {
     const query = (next.filters.text ?? '').trim()
@@ -900,6 +922,25 @@
         onChange={updateFilters}
         onSubmitSearch={submitSearch}
       />
+      <SegmentedControl
+        class="density-toggle"
+        ariaLabel="Card density"
+        value={preferences.boardCompact ? 'compact' : 'comfortable'}
+        options={[
+          { value: 'comfortable', label: 'Comfortable cards', title: 'Comfortable cards' },
+          { value: 'compact', label: 'Compact cards', title: 'Compact cards: one line each' },
+        ]}
+        onchange={(value) =>
+          onPreferencesChange({ ...preferences, boardCompact: value === 'compact' })}
+      >
+        {#snippet segment(option)}
+          {#if option.value === 'compact'}
+            <Rows4Icon size={14} strokeWidth={1.8} aria-hidden="true" />
+          {:else}
+            <Rows2Icon size={14} strokeWidth={1.8} aria-hidden="true" />
+          {/if}
+        {/snippet}
+      </SegmentedControl>
       <span class="board-columns-action">
         {#if columnsEditBlockedReason}
           <Tooltip text={columnsEditBlockedReason} align="end">
@@ -933,15 +974,16 @@
       onCompleteIssue={onCompleteBoardIssue}
       doneTotal={snapshot.closed_total}
       onShowMoreDone={onShowMoreBoardDone}
+      compact={preferences.boardCompact}
+      collapsedColumns={preferences.collapsedBoardColumns}
+      onToggleColumn={toggleBoardColumn}
     />
   </div>
   <BoardColumnsEditor
     open={columnsEditorOpen}
     columns={boardColumns}
     suggestions={boardLabelSuggestions}
-    savedWhere={selectedProject
-      ? `Saved to ${selectedProject.name} for everyone who opens its board.`
-      : 'Saved in this browser for boards that span projects.'}
+    savedWhere={`Saved to ${selectedProject?.name ?? 'this project'} for everyone who opens its board.`}
     onSave={(columns) => onSaveBoardColumns(selectedProject?.uid, columns)}
     onClose={() => {
       columnsEditorOpen = false

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   boardColumnsFromMetadata,
+  unionBoardColumns,
   buildBoard,
   defaultBoardColumns,
   normalizeBoardColumns,
@@ -235,5 +236,33 @@ describe('server-paged Done', () => {
 
     expect(done.issues).toHaveLength(40)
     expect(done.total).toBe(95)
+  })
+})
+
+describe('unionBoardColumns', () => {
+  it('merges every project board in order, keeping the first position of shared labels', () => {
+    expect(
+      unionBoardColumns([
+        { board_columns: ['doing', 'review'] },
+        { board_columns: ['triage', 'review', 'blocked'] },
+      ]),
+    ).toEqual(['doing', 'review', 'triage', 'blocked'])
+  })
+
+  it('counts a project without board settings as the default columns', () => {
+    expect(unionBoardColumns([{}, { board_columns: ['review'] }])).toEqual([
+      'in-progress',
+      'review',
+    ])
+  })
+
+  it('keeps a project that chose no label columns out of the union', () => {
+    expect(unionBoardColumns([{ board_columns: [] }, { board_columns: ['review'] }])).toEqual([
+      'review',
+    ])
+  })
+
+  it('falls back to the default columns when there are no projects', () => {
+    expect(unionBoardColumns([])).toEqual(['in-progress'])
   })
 })

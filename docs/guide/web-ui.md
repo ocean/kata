@@ -122,10 +122,17 @@ it.
 **Edit board columns** (the columns icon beside the filters) adds, orders, and
 removes label columns. A project board saves its columns to the project's
 `board_columns` metadata, so everyone who opens that project's board sees the
-same columns; this needs a credential that can change project settings. The
-board across all projects saves its columns in the browser. New boards start
-with one `in-progress` column. Read-only and stale sessions show the board but
+same columns; this needs a credential that can change project settings. New
+boards start with one `in-progress` column. The board across all projects shows
+every project's label columns together, each label once, in project order; open
+a project to change its columns. Read-only and stale sessions show the board but
 do not move cards.
+
+The **Card density** switch beside the filters chooses comfortable cards or
+compact cards, which show only the ID, priority, and title on one line. Done and
+any empty column have a collapse button in their header that shrinks the column
+to a narrow strip with its count; a collapsed column still accepts dropped
+cards. The browser remembers the density and collapsed columns.
 
 ## Manage an issue
 

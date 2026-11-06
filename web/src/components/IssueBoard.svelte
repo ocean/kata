@@ -3,6 +3,8 @@
   import { hashColor } from '@kenn-io/kit-ui/utils/color-hash'
   import CalendarIcon from '@lucide/svelte/icons/calendar'
   import CornerDownRightIcon from '@lucide/svelte/icons/corner-down-right'
+  import FoldHorizontalIcon from '@lucide/svelte/icons/fold-horizontal'
+  import UnfoldHorizontalIcon from '@lucide/svelte/icons/unfold-horizontal'
   import EllipsisIcon from '@lucide/svelte/icons/ellipsis'
   import ListTreeIcon from '@lucide/svelte/icons/list-tree'
   import OctagonAlertIcon from '@lucide/svelte/icons/octagon-alert'
@@ -38,6 +40,12 @@
     doneTotal?: number | undefined
     /** Asks the server for the next page of closed issues. */
     onShowMoreDone?: (() => void) | undefined
+    /** One-line cards with ID, priority, and title only. */
+    compact?: boolean | undefined
+    /** Column IDs shown as narrow strips. */
+    collapsedColumns?: readonly string[] | undefined
+    /** Collapses or expands a column; collapse is offered for Done and empty columns. */
+    onToggleColumn?: ((columnID: BoardColumnID) => void) | undefined
   }
 
   let {
@@ -52,6 +60,9 @@
     onCompleteIssue,
     doneTotal = undefined,
     onShowMoreDone = undefined,
+    compact = false,
+    collapsedColumns = [],
+    onToggleColumn = undefined,
   }: Props = $props()
 
   const uid = $props.id()
@@ -78,6 +89,7 @@
     }),
   )
   let columnLabels = $derived(new Set(columns))
+  let collapsedSet = $derived(new Set(collapsedColumns))
   let issuesByUID = $derived(new Map(issues.map((issue) => [issue.uid, issue])))
   const today = new Date().toISOString().slice(0, 10)
 
@@ -167,7 +179,7 @@
       index += step
     ) {
       const target = board.columns[index]!.issues
-      if (target.length === 0) continue
+      if (target.length === 0 || collapsedSet.has(board.columns[index]!.id)) continue
       focusCard(target[Math.min(row, target.length - 1)]!.uid)
       return
     }
@@ -259,8 +271,11 @@
   <div class="board-columns">
     {#each board.columns as column (column.id)}
       {@const headingID = `board-heading-${column.id}`}
+      {@const collapsed = collapsedSet.has(column.id)}
+      {@const canCollapse = column.kind === 'done' || column.total === 0}
       <section
         class="board-column"
+        class:collapsed
         class:drop-target={dropTarget === column.id && draggingUID !== null}
         class:column--done={column.kind === 'done'}
         aria-label={`${column.title}, ${cardCount(column.total)}`}
@@ -269,12 +284,48 @@
         ondragleave={(event) => handleDragLeave(event, column)}
         ondrop={(event) => handleDrop(event, column)}
       >
-        <header class="column-header">
-          <span class="column-dot" aria-hidden="true"></span>
-          <h2 id={headingID} class="column-title" title={column.title}>{column.title}</h2>
-          <span class="column-count" aria-hidden="true">{column.total}</span>
-        </header>
-        {#if column.issues.length === 0}
+        {#if collapsed}
+          <header class="column-header column-header--collapsed">
+            {#if onToggleColumn}
+              <button
+                type="button"
+                class="column-toggle"
+                aria-label={`Expand ${column.title}`}
+                aria-expanded="false"
+                title={`Expand ${column.title}`}
+                onclick={() => onToggleColumn(column.id)}
+              >
+                <UnfoldHorizontalIcon size={14} strokeWidth={2} aria-hidden="true" />
+              </button>
+            {/if}
+            <span class="column-dot" aria-hidden="true"></span>
+            <span class="column-count" aria-hidden="true">{column.total}</span>
+            <h2 id={headingID} class="column-title column-title--vertical" title={column.title}>
+              {column.title}
+            </h2>
+          </header>
+        {:else}
+          <header class="column-header">
+            <span class="column-dot" aria-hidden="true"></span>
+            <h2 id={headingID} class="column-title" title={column.title}>{column.title}</h2>
+            <span class="column-count" aria-hidden="true">{column.total}</span>
+            {#if onToggleColumn && canCollapse}
+              <button
+                type="button"
+                class="column-toggle"
+                aria-label={`Collapse ${column.title}`}
+                aria-expanded="true"
+                title={`Collapse ${column.title}`}
+                onclick={() => onToggleColumn(column.id)}
+              >
+                <FoldHorizontalIcon size={14} strokeWidth={2} aria-hidden="true" />
+              </button>
+            {/if}
+          </header>
+        {/if}
+        {#if collapsed}
+          <!-- Collapsed: the strip keeps its count and still accepts drops. -->
+        {:else if column.issues.length === 0}
           <p class="column-empty">
             {column.kind === 'done' ? 'Nothing done yet' : 'No cards'}
           </p>
@@ -298,6 +349,7 @@
                 class:pending={pending.has(issue.uid)}
                 class:closed={issue.status === 'closed'}
                 class:child={depth > 0}
+                class:compact
                 data-depth={depth}
                 style:--depth={Math.min(depth, 3)}
                 draggable={canMove ? 'true' : 'false'}
@@ -309,7 +361,9 @@
                   class="card-open"
                   data-card-uid={issue.uid}
                   aria-labelledby={titleID}
-                  aria-describedby={issue.parent ? `${relationID} ${metaID}` : metaID}
+                  aria-describedby={[issue.parent ? relationID : '', compact ? '' : metaID]
+                    .filter(Boolean)
+                    .join(' ') || undefined}
                   aria-current={issue.uid === selectedIssueUID ? 'true' : undefined}
                   aria-keyshortcuts={canMove ? 'Alt+ArrowLeft Alt+ArrowRight' : undefined}
                   onclick={() => onOpenIssue(issue)}
@@ -321,10 +375,13 @@
                     <span class={`card-priority priority-${issue.priority}`}>P{issue.priority}</span
                     >
                   {/if}
-                  {#if showProject}
+                  {#if compact}
+                    <span class="card-title card-title--inline" id={titleID}>{issue.title}</span>
+                  {/if}
+                  {#if showProject && !compact}
                     <span class="card-project">{issue.project_name}</span>
                   {/if}
-                  {#if depth === 0 && issue.parent}
+                  {#if depth === 0 && issue.parent && !compact}
                     <!-- The parent sits in another column; name it on the card. -->
                     <span
                       class="card-parent"
@@ -344,39 +401,41 @@
                     >Subtask of {parent?.title ?? issue.parent.short_id}</span
                   >
                 {/if}
-                <p class="card-title" id={titleID}>{issue.title}</p>
-                <div class="card-meta" id={metaID}>
-                  {#if blockers > 0}
-                    <span class="meta blocked" title="Open blockers">
-                      <OctagonAlertIcon size={11} strokeWidth={2} aria-hidden="true" />
-                      <span class="kit-sr-only">Blocked by</span>
-                      {blockers}
-                    </span>
-                  {/if}
-                  {#if issue.child_counts && issue.child_counts.total > 0}
-                    {@const done = issue.child_counts.total - issue.child_counts.open}
-                    <span class="meta" title="Subtasks done">
-                      <ListTreeIcon size={11} strokeWidth={2} aria-hidden="true" />
-                      <span class="kit-sr-only">Subtasks done</span>
-                      {done}/{issue.child_counts.total}
-                    </span>
-                  {/if}
-                  {#if deadline && issue.status === 'open'}
-                    <span class="meta" class:overdue={deadline < today} title="Deadline">
-                      <CalendarIcon size={11} strokeWidth={2} aria-hidden="true" />
-                      <span class="kit-sr-only">Due</span>
-                      {shortDate(deadline)}
-                    </span>
-                  {/if}
-                  {#each extraLabels as label (label)}
-                    <span class="meta label" style:--label-color={hashColor(label)}>{label}</span>
-                  {/each}
-                  {#if issue.owner}
-                    <span class="meta owner"
-                      ><span class="kit-sr-only">Owner</span>{issue.owner}</span
-                    >
-                  {/if}
-                </div>
+                {#if !compact}
+                  <p class="card-title" id={titleID}>{issue.title}</p>
+                  <div class="card-meta" id={metaID}>
+                    {#if blockers > 0}
+                      <span class="meta blocked" title="Open blockers">
+                        <OctagonAlertIcon size={11} strokeWidth={2} aria-hidden="true" />
+                        <span class="kit-sr-only">Blocked by</span>
+                        {blockers}
+                      </span>
+                    {/if}
+                    {#if issue.child_counts && issue.child_counts.total > 0}
+                      {@const done = issue.child_counts.total - issue.child_counts.open}
+                      <span class="meta" title="Subtasks done">
+                        <ListTreeIcon size={11} strokeWidth={2} aria-hidden="true" />
+                        <span class="kit-sr-only">Subtasks done</span>
+                        {done}/{issue.child_counts.total}
+                      </span>
+                    {/if}
+                    {#if deadline && issue.status === 'open'}
+                      <span class="meta" class:overdue={deadline < today} title="Deadline">
+                        <CalendarIcon size={11} strokeWidth={2} aria-hidden="true" />
+                        <span class="kit-sr-only">Due</span>
+                        {shortDate(deadline)}
+                      </span>
+                    {/if}
+                    {#each extraLabels as label (label)}
+                      <span class="meta label" style:--label-color={hashColor(label)}>{label}</span>
+                    {/each}
+                    {#if issue.owner}
+                      <span class="meta owner"
+                        ><span class="kit-sr-only">Owner</span>{issue.owner}</span
+                      >
+                    {/if}
+                  </div>
+                {/if}
                 {#if canMove}
                   <button
                     type="button"
@@ -395,7 +454,7 @@
             {/each}
           </ul>
         {/if}
-        {#if column.kind === 'done' && column.total > column.issues.length}
+        {#if !collapsed && column.kind === 'done' && column.total > column.issues.length}
           {@const more = Math.min(defaultDoneLimit, column.total - column.issues.length)}
           <button
             type="button"
@@ -494,6 +553,53 @@
     border-top: 2px solid var(--column-color);
     border-start-start-radius: var(--radius-md);
     border-start-end-radius: var(--radius-md);
+  }
+
+  .column-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    flex: 0 0 auto;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .column-toggle:hover {
+    background: var(--bg-surface-hover);
+    color: var(--text-primary);
+  }
+
+  .column-toggle:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 1px;
+  }
+
+  /* A collapsed column is a narrow strip: toggle, count, and a vertical title. */
+  .board-column.collapsed {
+    flex: 0 0 44px;
+    max-width: 44px;
+    scroll-snap-align: none;
+  }
+
+  .column-header--collapsed {
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-3) 0;
+  }
+
+  .column-header--collapsed .column-count {
+    margin-inline-start: 0;
+  }
+
+  .column-title--vertical {
+    max-height: 240px;
+    writing-mode: vertical-rl;
   }
 
   .column-dot {
@@ -683,6 +789,28 @@
   .priority-1 {
     background: color-mix(in srgb, var(--accent-amber) 14%, transparent);
     color: color-mix(in srgb, var(--accent-amber) 70%, var(--text-primary));
+  }
+
+  /* Compact cards: one line with ID, priority, and the title. */
+  .card.compact {
+    gap: 0;
+    padding-block: var(--space-2);
+  }
+
+  .card-title.card-title--inline {
+    display: block;
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .card.compact .card-epic {
+    margin-inline-start: 0;
   }
 
   .card-title {

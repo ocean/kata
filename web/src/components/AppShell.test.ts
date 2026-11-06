@@ -138,6 +138,86 @@ describe('AppShell', () => {
       expect(onShowMoreBoardDone).toHaveBeenCalledOnce()
     })
 
+    test('builds the all-projects board from every project column and leaves editing to projects', async () => {
+      const current = snapshot()
+      current.catalog[0]!.project.metadata = { board_columns: ['doing', 'review'] }
+      current.catalog.push({
+        project: {
+          ...current.catalog[0]!.project,
+          id: 8,
+          uid: '01J00000000000000000000009',
+          name: 'example-peer',
+          metadata: { board_columns: ['triage', 'review'] },
+        },
+        stats: { Open: 0, Closed: 0, LastEventAt: '2026-08-01T12:00:00.000Z' },
+      })
+      render(AppShell, {
+        props: {
+          route: { kind: 'kata', view: 'all-open', graph: false, board: true, filters },
+          snapshot: current,
+          loading: false,
+          ...mutationProps(),
+          onNavigate: vi.fn(),
+          onCreateProject: vi.fn(async () => ({ changed: true })),
+        },
+      })
+
+      const board = screen.getByRole('region', { name: 'Issue board' })
+      expect(
+        within(board)
+          .getAllByRole('region')
+          .map((region) => region.getAttribute('aria-label')?.split(',')[0]),
+      ).toEqual(['Open', 'doing', 'review', 'triage', 'Done'])
+      const edit = screen.getByRole('button', { name: 'Edit board columns' })
+      expect(edit.hasAttribute('disabled')).toBe(true)
+    })
+
+    test('switches cards to compact from the density control and remembers it', async () => {
+      const onPreferencesChange = vi.fn()
+      render(AppShell, {
+        props: {
+          route: { kind: 'kata', projectUID, graph: false, board: true, filters },
+          snapshot: snapshot(),
+          loading: false,
+          ...mutationProps(),
+          onNavigate: vi.fn(),
+          onCreateProject: vi.fn(async () => ({ changed: true })),
+          onPreferencesChange,
+        },
+      })
+
+      await fireEvent.click(
+        within(screen.getByRole('radiogroup', { name: 'Card density' })).getByRole('radio', {
+          name: 'Compact cards',
+        }),
+      )
+
+      expect(onPreferencesChange).toHaveBeenCalledWith(
+        expect.objectContaining({ boardCompact: true }),
+      )
+    })
+
+    test('remembers a collapsed Done column', async () => {
+      const onPreferencesChange = vi.fn()
+      render(AppShell, {
+        props: {
+          route: { kind: 'kata', projectUID, graph: false, board: true, filters },
+          snapshot: snapshot(),
+          loading: false,
+          ...mutationProps(),
+          onNavigate: vi.fn(),
+          onCreateProject: vi.fn(async () => ({ changed: true })),
+          onPreferencesChange,
+        },
+      })
+
+      await fireEvent.click(screen.getByRole('button', { name: 'Collapse Done' }))
+
+      expect(onPreferencesChange).toHaveBeenCalledWith(
+        expect.objectContaining({ collapsedBoardColumns: ['done'] }),
+      )
+    })
+
     test('keeps the board when another project is chosen in the sidebar', async () => {
       const onNavigate = vi.fn()
       render(AppShell, {
@@ -1510,7 +1590,8 @@ describe('AppShell', () => {
           splitDirection: 'horizontal',
           splitSize: 420,
           collapsedGroups: [],
-          boardColumns: ['in-progress'],
+          boardCompact: false,
+          collapsedBoardColumns: [],
         },
         onPreferencesChange,
         ...mutationProps(),
