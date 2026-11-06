@@ -13,7 +13,10 @@ All notable changes to kata, grouped by release. Versioned releases start with
   lay cards out in Open, label columns you choose, and Done; drag a card, use
   its **Move to…** menu, or press **Alt+←**/**Alt+→** to move it, and select it
   to read the whole issue in a drawer. Moving a card swaps its column label,
-  and dropping it on Done asks for the usual completion note and evidence. See
+  and dropping it on Done asks for the usual completion note and evidence.
+  Epics show an **Epic** badge with their subtasks listed underneath, and Done
+  loads closed issues 30 at a time from the daemon, so projects with long
+  histories open quickly. See
   [Work on a board](guide/web-ui.md#work-on-a-board).
 - Give coding agents a shorter kata contract. The text that hooks inject,
   `kata init --with-agents` writes, and the MCP `workflow` guide serves now

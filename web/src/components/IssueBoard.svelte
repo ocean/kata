@@ -2,6 +2,7 @@
   import { KbdBadge, Menu, MenuContent, MenuItem, type MenuAnchorPoint } from '@kenn-io/kit-ui'
   import { hashColor } from '@kenn-io/kit-ui/utils/color-hash'
   import CalendarIcon from '@lucide/svelte/icons/calendar'
+  import CornerDownRightIcon from '@lucide/svelte/icons/corner-down-right'
   import EllipsisIcon from '@lucide/svelte/icons/ellipsis'
   import ListTreeIcon from '@lucide/svelte/icons/list-tree'
   import OctagonAlertIcon from '@lucide/svelte/icons/octagon-alert'
@@ -11,6 +12,7 @@
     buildBoard,
     columnFor,
     defaultDoneLimit,
+    isEpic,
     planBoardMove,
     type BoardColumn,
     type BoardColumnID,
@@ -32,6 +34,10 @@
     onOpenIssue: (issue: KataTaskSummary) => void
     onMoveIssue: (issue: KataTaskSummary, plan: BoardMovePlan) => Promise<boolean>
     onCompleteIssue: (issue: KataTaskSummary, request: KataTaskCloseRequest) => Promise<boolean>
+    /** Closed issues the server counted; set when Done is paged on the server. */
+    doneTotal?: number | undefined
+    /** Asks the server for the next page of closed issues. */
+    onShowMoreDone?: (() => void) | undefined
   }
 
   let {
@@ -44,6 +50,8 @@
     onOpenIssue,
     onMoveIssue,
     onCompleteIssue,
+    doneTotal = undefined,
+    onShowMoreDone = undefined,
   }: Props = $props()
 
   const uid = $props.id()
@@ -61,7 +69,14 @@
   let boardElement = $state<HTMLElement>()
 
   let canMove = $derived(moveBlockedReason === undefined)
-  let board = $derived(buildBoard(issues, columns, { doneLimit, pending }))
+  let serverPaged = $derived(doneTotal !== undefined && onShowMoreDone !== undefined)
+  let board = $derived(
+    buildBoard(issues, columns, {
+      doneLimit,
+      pending,
+      doneTotal: serverPaged ? doneTotal : undefined,
+    }),
+  )
   let columnLabels = $derived(new Set(columns))
   let issuesByUID = $derived(new Map(issues.map((issue) => [issue.uid, issue])))
   const today = new Date().toISOString().slice(0, 10)
@@ -268,6 +283,9 @@
             {#each column.issues as issue (issue.uid)}
               {@const titleID = `board-card-title-${issue.uid}`}
               {@const metaID = `board-card-meta-${issue.uid}`}
+              {@const relationID = `board-card-relation-${issue.uid}`}
+              {@const depth = column.depths.get(issue.uid) ?? 0}
+              {@const parent = issue.parent ? issuesByUID.get(issue.parent.uid) : undefined}
               {@const extraLabels = (issue.labels ?? []).filter(
                 (label) => !columnLabels.has(label),
               )}
@@ -279,6 +297,9 @@
                 class:dragging={issue.uid === draggingUID}
                 class:pending={pending.has(issue.uid)}
                 class:closed={issue.status === 'closed'}
+                class:child={depth > 0}
+                data-depth={depth}
+                style:--depth={Math.min(depth, 3)}
                 draggable={canMove ? 'true' : 'false'}
                 ondragstart={(event) => handleDragStart(event, issue)}
                 ondragend={endDrag}
@@ -288,7 +309,7 @@
                   class="card-open"
                   data-card-uid={issue.uid}
                   aria-labelledby={titleID}
-                  aria-describedby={metaID}
+                  aria-describedby={issue.parent ? `${relationID} ${metaID}` : metaID}
                   aria-current={issue.uid === selectedIssueUID ? 'true' : undefined}
                   aria-keyshortcuts={canMove ? 'Alt+ArrowLeft Alt+ArrowRight' : undefined}
                   onclick={() => onOpenIssue(issue)}
@@ -303,7 +324,26 @@
                   {#if showProject}
                     <span class="card-project">{issue.project_name}</span>
                   {/if}
+                  {#if depth === 0 && issue.parent}
+                    <!-- The parent sits in another column; name it on the card. -->
+                    <span
+                      class="card-parent"
+                      title={parent ? `Subtask of ${parent.title}` : 'Subtask'}
+                      aria-hidden="true"
+                    >
+                      <CornerDownRightIcon size={11} strokeWidth={2} />
+                      <span>{issue.parent.short_id}</span>
+                    </span>
+                  {/if}
+                  {#if isEpic(issue)}
+                    <span class="card-epic">Epic</span>
+                  {/if}
                 </div>
+                {#if issue.parent}
+                  <span class="kit-sr-only" id={relationID}
+                    >Subtask of {parent?.title ?? issue.parent.short_id}</span
+                  >
+                {/if}
                 <p class="card-title" id={titleID}>{issue.title}</p>
                 <div class="card-meta" id={metaID}>
                   {#if blockers > 0}
@@ -360,8 +400,10 @@
           <button
             type="button"
             class="column-more"
+            disabled={serverPaged && loading}
             onclick={() => {
-              doneLimit += defaultDoneLimit
+              if (serverPaged) onShowMoreDone?.()
+              else doneLimit += defaultDoneLimit
             }}>Show {more} more</button
           >
         {/if}
@@ -518,6 +560,15 @@
       opacity 120ms ease;
   }
 
+  /* Subtasks sit under their parent, indented one step per level. */
+  .card.child {
+    margin-inline-start: calc(var(--depth) * var(--space-5));
+    border-inline-start: 3px solid
+      color-mix(in srgb, var(--accent-purple) 45%, var(--border-default));
+    border-start-start-radius: 0;
+    border-end-start-radius: 0;
+  }
+
   .card[draggable='true'] {
     cursor: grab;
   }
@@ -578,6 +629,28 @@
   }
 
   .card-id {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-2xs);
+  }
+
+  .card-epic {
+    margin-inline-start: auto;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent-purple) 14%, transparent);
+    color: color-mix(in srgb, var(--accent-purple) 70%, var(--text-primary));
+    font-size: var(--font-size-2xs);
+    font-weight: var(--font-weight-semibold);
+    letter-spacing: 0.02em;
+    line-height: 16px;
+    text-transform: uppercase;
+  }
+
+  .card-parent {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
     color: var(--text-muted);
     font-family: var(--font-mono);
     font-size: var(--font-size-2xs);

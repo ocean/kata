@@ -108,6 +108,36 @@ describe('AppShell', () => {
       )
     })
 
+    test('shows the server count of closed issues and asks for the next page', async () => {
+      const current = snapshot()
+      current.closed_total = 45
+      current.collection = Array.from({ length: 30 }, (_, n) => ({
+        ...current.collection![0]!,
+        id: 100 + n,
+        uid: `01J000000000000000000001${String(n).padStart(2, '0')}`,
+        short_id: `c${n}`,
+        title: `Closed ${n}`,
+        status: 'closed' as const,
+        closed_at: '2026-08-01T12:00:00.000Z',
+      }))
+      const onShowMoreBoardDone = vi.fn()
+      render(AppShell, {
+        props: {
+          route: { kind: 'kata', projectUID, graph: false, board: true, filters },
+          snapshot: current,
+          loading: false,
+          ...mutationProps(),
+          onNavigate: vi.fn(),
+          onCreateProject: vi.fn(async () => ({ changed: true })),
+          onShowMoreBoardDone,
+        },
+      })
+
+      expect(screen.getByRole('region', { name: 'Done, 45 cards' })).toBeTruthy()
+      await fireEvent.click(screen.getByRole('button', { name: 'Show 15 more' }))
+      expect(onShowMoreBoardDone).toHaveBeenCalledOnce()
+    })
+
     test('keeps the board when another project is chosen in the sidebar', async () => {
       const onNavigate = vi.fn()
       render(AppShell, {

@@ -107,7 +107,12 @@ labels:
 | --- | --- | --- |
 | Open | Open issues with none of the board's column labels | Removes the issue's column labels |
 | A label column | Open issues carrying that label; an issue with several column labels sits in the first | Adds the label, removes other column labels, and reopens a closed issue |
-| Done | Closed issues, newest first, 30 at a time | Opens the **Complete task** form, which asks for a reason, note, and evidence before closing |
+| Done | Closed issues, newest first; the daemon sends 30 at a time and **Show more** loads the next 30 | Opens the **Complete task** form, which asks for a reason, note, and evidence before closing |
+
+An issue with subtasks is an epic: its card carries an **Epic** badge, and
+subtasks in the same column are listed directly under it, indented one step per
+level. A subtask whose epic sits in another column shows that epic's ID beside
+its own. Subtasks still move on their own.
 
 Move a card by dragging it, from its **Move to…** menu, or by focusing it and
 pressing **Alt+←** or **Alt+→**. Arrow keys move focus between cards and

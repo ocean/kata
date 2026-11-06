@@ -254,3 +254,105 @@ describe('IssueBoard', () => {
     expect(within(column('Done')).getAllByRole('listitem')).toHaveLength(35)
   })
 })
+
+describe('IssueBoard epics and subtasks', () => {
+  afterEach(() => cleanup())
+
+  const epic = task({
+    id: 20,
+    uid: 'u-epic',
+    short_id: 'epc1',
+    title: 'Launch the board',
+    priority: 2,
+    child_counts: { open: 2, total: 3 },
+  })
+  const firstChild = task({
+    id: 21,
+    uid: 'u-child-a',
+    short_id: 'cha1',
+    title: 'Draw the columns',
+    priority: 1,
+    parent: { uid: 'u-epic', short_id: 'epc1' },
+  })
+  const secondChild = task({
+    id: 22,
+    uid: 'u-child-b',
+    short_id: 'chb1',
+    title: 'Wire up dragging',
+    priority: 3,
+    parent: { uid: 'u-epic', short_id: 'epc1' },
+  })
+  const elsewhereChild = task({
+    id: 23,
+    uid: 'u-child-c',
+    short_id: 'chc1',
+    title: 'Review the copy',
+    labels: ['in-progress'],
+    parent: { uid: 'u-epic', short_id: 'epc1' },
+  })
+  const loner = task({ id: 24, uid: 'u-loner', title: 'Unrelated chore', priority: 0 })
+
+  function cardTitles(region: HTMLElement): string[] {
+    return within(region)
+      .getAllByRole('listitem')
+      .map((item) => item.querySelector('.card-title')?.textContent ?? '')
+  }
+
+  it('marks epic cards and lists their subtasks directly underneath, indented', () => {
+    renderBoard({ issues: [secondChild, loner, epic, firstChild, elsewhereChild] })
+
+    expect(cardTitles(column('Open'))).toEqual([
+      'Unrelated chore',
+      'Launch the board',
+      'Draw the columns',
+      'Wire up dragging',
+    ])
+    const cards = within(column('Open')).getAllByRole('listitem')
+    expect(within(cards[1]!).getByText('Epic')).toBeTruthy()
+    expect(within(cards[0]!).queryByText('Epic')).toBeNull()
+    expect(cards.map((card) => card.getAttribute('data-depth'))).toEqual(['0', '0', '1', '1'])
+  })
+
+  it('names the subtask relationship for screen readers', () => {
+    renderBoard({ issues: [epic, firstChild] })
+
+    expect(
+      screen.getByRole('button', {
+        name: 'Draw the columns',
+        description: /^Subtask of Launch the board/,
+      }),
+    ).toBeTruthy()
+  })
+
+  it('shows which epic a subtask belongs to when the epic is in another column', () => {
+    renderBoard({ issues: [epic, elsewhereChild] })
+
+    const card = within(column('in-progress')).getByRole('listitem')
+    expect(card.getAttribute('data-depth')).toBe('0')
+    expect(within(card).getByText('epc1').closest('.card-parent')).toBeTruthy()
+  })
+})
+
+describe('IssueBoard server-paged Done', () => {
+  afterEach(() => cleanup())
+
+  it('reports the server total and asks the server for the next page', async () => {
+    const closed = Array.from({ length: 30 }, (_, n) =>
+      task({
+        id: 200 + n,
+        uid: `u-done-${n}`,
+        title: `Done ${n}`,
+        status: 'closed',
+        closed_at: `2026-04-01T00:${String(n).padStart(2, '0')}:00Z`,
+      }),
+    )
+    const onShowMoreDone = vi.fn()
+    renderBoard({ issues: closed, columns: [], doneTotal: 75, onShowMoreDone })
+
+    expect(column('Done').getAttribute('aria-label')).toBe('Done, 75 cards')
+    expect(within(column('Done')).getAllByRole('listitem')).toHaveLength(30)
+    await fireEvent.click(screen.getByRole('button', { name: 'Show 30 more' }))
+
+    expect(onShowMoreDone).toHaveBeenCalledOnce()
+  })
+})

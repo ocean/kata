@@ -164,3 +164,76 @@ describe('planBoardMove', () => {
     ).toEqual({ removeLabels: ['doing'], reopen: false, close: false })
   })
 })
+
+describe('subtasks on the board', () => {
+  const child = (uid: string, parent: string, overrides: Partial<BoardIssue> = {}) =>
+    issue(uid, { parent: { uid: parent }, ...overrides })
+
+  it('lists children directly under their parent in the same column, by priority', () => {
+    const board = buildBoard(
+      [
+        issue('solo', { priority: 1 }),
+        child('epic-b', 'epic', { priority: 3 }),
+        issue('epic', { priority: 2, child_counts: { open: 2, total: 2 } }),
+        child('epic-a', 'epic', { priority: 0 }),
+        issue('late', { priority: 4 }),
+      ],
+      [],
+    )
+    const open = board.columns[0]!
+
+    expect(open.issues.map((i) => i.uid)).toEqual(['solo', 'epic', 'epic-a', 'epic-b', 'late'])
+    expect([...open.depths.entries()]).toEqual([
+      ['solo', 0],
+      ['epic', 0],
+      ['epic-a', 1],
+      ['epic-b', 1],
+      ['late', 0],
+    ])
+  })
+
+  it('nests grandchildren one level deeper', () => {
+    const board = buildBoard([issue('root'), child('mid', 'root'), child('leaf', 'mid')], [])
+
+    expect(board.columns[0]!.issues.map((i) => i.uid)).toEqual(['root', 'mid', 'leaf'])
+    expect(board.columns[0]!.depths.get('leaf')).toBe(2)
+  })
+
+  it('keeps a child top-level when its parent sits in another column', () => {
+    const board = buildBoard(
+      [issue('epic', { labels: ['doing'] }), child('task', 'epic')],
+      ['doing'],
+    )
+
+    expect(board.columns[0]!.issues.map((i) => i.uid)).toEqual(['task'])
+    expect(board.columns[0]!.depths.get('task')).toBe(0)
+  })
+
+  it('nests closed children under a closed parent in Done', () => {
+    const board = buildBoard(
+      [
+        issue('epic', { status: 'closed', closed_at: '2026-01-01T00:00:00Z' }),
+        child('task', 'epic', { status: 'closed', closed_at: '2026-01-05T00:00:00Z' }),
+        issue('other', { status: 'closed', closed_at: '2026-01-03T00:00:00Z' }),
+      ],
+      [],
+    )
+
+    expect(board.columns.at(-1)!.issues.map((i) => i.uid)).toEqual(['other', 'epic', 'task'])
+  })
+})
+
+describe('server-paged Done', () => {
+  it('shows every closed issue it was given and reports the server total', () => {
+    const closed = Array.from({ length: 40 }, (_, n) =>
+      issue(`c${n}`, {
+        status: 'closed',
+        closed_at: `2026-01-01T00:00:${String(n).padStart(2, '0')}Z`,
+      }),
+    )
+    const done = buildBoard(closed, [], { doneTotal: 95 }).columns.at(-1)!
+
+    expect(done.issues).toHaveLength(40)
+    expect(done.total).toBe(95)
+  })
+})

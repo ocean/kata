@@ -139,6 +139,8 @@
     onSaveBoardColumns?:
       | ((projectUID: string | undefined, columns: string[]) => Promise<boolean>)
       | undefined
+    /** Loads the next page of the board's closed issues from the server. */
+    onShowMoreBoardDone?: (() => void) | undefined
   }
 
   let {
@@ -193,6 +195,7 @@
     onMoveBoardIssue = async () => false,
     onCompleteBoardIssue = async () => false,
     onSaveBoardColumns = async () => false,
+    onShowMoreBoardDone = undefined,
   }: Props = $props()
 
   let connectionNow = $state(Date.now())
@@ -928,6 +931,8 @@
       onOpenIssue={(issue) => selectIssue(issue.uid)}
       onMoveIssue={onMoveBoardIssue}
       onCompleteIssue={onCompleteBoardIssue}
+      doneTotal={snapshot.closed_total}
+      onShowMoreDone={onShowMoreBoardDone}
     />
   </div>
   <BoardColumnsEditor

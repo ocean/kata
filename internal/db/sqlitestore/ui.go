@@ -71,7 +71,7 @@ func (d *Store) ReadUISnapshot(ctx context.Context, query db.UISnapshotQuery) (d
 		data.AuthorityReused = true
 	} else {
 		data.Projects = projects
-		data.Issues, err = readUIIssues(ctx, tx, query, projectNames)
+		data.Issues, data.ClosedTotal, err = readUIIssues(ctx, tx, query, projectNames)
 		if err != nil {
 			return db.UISnapshotData{}, err
 		}
@@ -549,7 +549,7 @@ func readUIIssues(
 	tx *sql.Tx,
 	query db.UISnapshotQuery,
 	projectNames map[int64]string,
-) ([]db.UIIssue, error) {
+) ([]db.UIIssue, *int, error) {
 	statement := scheduledIssueSelect + ` WHERE i.deleted_at IS NULL AND p.deleted_at IS NULL AND p.name <> ?`
 	args := []any{db.SystemProjectName}
 	statement += " AND " + authorizedProjectPredicate(ctx, "p.uid", &args)
@@ -612,7 +612,7 @@ func readUIIssues(
 		var err error
 		readyAt, err = time.Parse(time.RFC3339Nano, query.ReadyAt)
 		if err != nil {
-			return nil, fmt.Errorf("parse UI ready_at: %w", err)
+			return nil, nil, fmt.Errorf("parse UI ready_at: %w", err)
 		}
 	}
 	switch query.View {
@@ -659,71 +659,114 @@ func readUIIssues(
 		statement += ` AND (` + strings.Join(predicates, " OR ") + `)`
 	}
 	limit := min(query.Limit, 1000)
-	statement += ` ORDER BY i.updated_at DESC, i.id DESC`
-	if limit > 0 && !filterReadySchedules && !filterCalendarSchedules && !filterDelegated {
-		statement += ` LIMIT ?`
-		args = append(args, limit)
-	}
-	rows, err := tx.QueryContext(ctx, statement, args...)
-	if err != nil {
-		return nil, fmt.Errorf("read UI issues: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	issues := []db.UIIssue{}
-	for rows.Next() {
-		issue, recurrenceTimezone, err := scanScheduledIssue(ctx, rows)
+	postFiltered := filterReadySchedules || filterCalendarSchedules || filterDelegated
+	scan := func(statement string, args []any, limit int) ([]db.UIIssue, error) {
+		rows, err := tx.QueryContext(ctx, statement, args...)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("read UI issues: %w", err)
 		}
-		if readyRequested && issue.AssignmentExpiresOn != nil && !issue.AssignmentExpiresOn.After(readyAt) {
-			issue.Owner = nil
-			issue.AssignmentExpiresOn = nil
-		}
-		if filterReadySchedules && issue.Status == "open" {
-			due, err := metadata.ScheduledOnDue(
-				string(issue.Metadata), readyAt,
+		defer func() { _ = rows.Close() }()
+		issues := []db.UIIssue{}
+		for rows.Next() {
+			issue, recurrenceTimezone, err := scanScheduledIssue(ctx, rows)
+			if err != nil {
+				return nil, err
+			}
+			if readyRequested && issue.AssignmentExpiresOn != nil && !issue.AssignmentExpiresOn.After(readyAt) {
+				issue.Owner = nil
+				issue.AssignmentExpiresOn = nil
+			}
+			if filterReadySchedules && issue.Status == "open" {
+				due, err := metadata.ScheduledOnDue(
+					string(issue.Metadata), readyAt,
+					scheduleDefaultTimezone(recurrenceTimezone, query.DefaultTimezone),
+				)
+				if err != nil {
+					return nil, fmt.Errorf("read UI issue %s schedule: %w", issue.UID, err)
+				}
+				if !due {
+					continue
+				}
+			}
+			if filterDelegated {
+				if _, ok := db.IssueTeammate(issue.Metadata); !ok {
+					continue
+				}
+			}
+			scheduledOnDate, deadlineOnDate, matches, err := db.MatchUICalendarView(
+				string(issue.Metadata), query,
 				scheduleDefaultTimezone(recurrenceTimezone, query.DefaultTimezone),
 			)
 			if err != nil {
-				return nil, fmt.Errorf("read UI issue %s schedule: %w", issue.UID, err)
+				return nil, fmt.Errorf("read UI issue %s calendar schedule: %w", issue.UID, err)
 			}
-			if !due {
+			if !matches {
 				continue
 			}
-		}
-		if filterDelegated {
-			if _, ok := db.IssueTeammate(issue.Metadata); !ok {
-				continue
+			uiIssue := makeUIIssue(issue, projectNames[issue.ProjectID], nil)
+			uiIssue.ScheduledOnDate = scheduledOnDate
+			uiIssue.DeadlineOnDate = deadlineOnDate
+			issues = append(issues, uiIssue)
+			if limit > 0 && len(issues) == limit {
+				break
 			}
 		}
-		scheduledOnDate, deadlineOnDate, matches, err := db.MatchUICalendarView(
-			string(issue.Metadata), query,
-			scheduleDefaultTimezone(recurrenceTimezone, query.DefaultTimezone),
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("iterate UI issues: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, fmt.Errorf("close UI issues: %w", err)
+		}
+		return issues, nil
+	}
+	var issues []db.UIIssue
+	var closedTotal *int
+	if query.ClosedLimit > 0 && !postFiltered {
+		// Open issues stay unbounded; closed issues come back one page at a
+		// time, newest close first, with a count of every matching closed
+		// issue from the same read transaction.
+		openStatement := statement + ` AND i.status <> 'closed' ORDER BY i.updated_at DESC, i.id DESC`
+		openArgs := slices.Clone(args)
+		if limit > 0 {
+			openStatement += ` LIMIT ?`
+			openArgs = append(openArgs, limit)
+		}
+		var err error
+		issues, err = scan(openStatement, openArgs, limit)
+		if err != nil {
+			return nil, nil, err
+		}
+		closedStatement := statement + ` AND i.status = 'closed'`
+		closedPage, err := scan(
+			closedStatement+` ORDER BY i.closed_at DESC, i.id DESC LIMIT ?`,
+			append(slices.Clone(args), query.ClosedLimit), query.ClosedLimit,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("read UI issue %s calendar schedule: %w", issue.UID, err)
+			return nil, nil, err
 		}
-		if !matches {
-			continue
+		issues = append(issues, closedPage...)
+		var total int
+		// #nosec G202 -- closedStatement holds only fixed SQL fragments and ? placeholders; values stay bound.
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM (`+closedStatement+`)`, args...).Scan(&total); err != nil {
+			return nil, nil, fmt.Errorf("count UI closed issues: %w", err)
 		}
-		uiIssue := makeUIIssue(issue, projectNames[issue.ProjectID], nil)
-		uiIssue.ScheduledOnDate = scheduledOnDate
-		uiIssue.DeadlineOnDate = deadlineOnDate
-		issues = append(issues, uiIssue)
-		if limit > 0 && len(issues) == limit {
-			break
+		closedTotal = &total
+	} else {
+		statement += ` ORDER BY i.updated_at DESC, i.id DESC`
+		if limit > 0 && !postFiltered {
+			statement += ` LIMIT ?`
+			args = append(args, limit)
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate UI issues: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("close UI issues: %w", err)
+		var err error
+		issues, err = scan(statement, args, limit)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	if err := readUILabelsForIssues(ctx, tx, issues); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return issues, nil
+	return issues, closedTotal, nil
 }
 
 const uiLabelBatchSize = 500

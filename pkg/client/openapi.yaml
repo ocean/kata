@@ -6998,6 +6998,10 @@ components:
           items:
             $ref: "#/components/schemas/UIProject"
           type: array
+        closed_total:
+          description: Number of matching closed issues, present only when closed_limit is set.
+          format: int64
+          type: integer
         collection:
           items:
             $ref: "#/components/schemas/UIIssue"
@@ -12202,6 +12206,14 @@ paths:
           in: query
           name: limit
           schema:
+            format: int64
+            type: integer
+        - description: When set (1-1000), collection holds every matching open issue but only this many of the most recently closed matching issues, and closed_total counts every matching closed issue. Not accepted for the today, upcoming, deadlines, and delegated views.
+          explode: false
+          in: query
+          name: closed_limit
+          schema:
+            description: When set (1-1000), collection holds every matching open issue but only this many of the most recently closed matching issues, and closed_total counts every matching closed issue. Not accepted for the today, upcoming, deadlines, and delegated views.
             format: int64
             type: integer
       responses:

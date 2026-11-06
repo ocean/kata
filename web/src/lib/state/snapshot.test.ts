@@ -158,6 +158,25 @@ describe('snapshotIntentForRoute', () => {
     expect(intent.localDate).toBeUndefined()
   })
 
+  it('asks the board for one page of closed issues', () => {
+    const route = parseRoute(new URL('https://daemon.example/kata?layout=board'))
+    if (route.kind === 'route-error') throw new Error('expected a Kata route')
+
+    expect(snapshotIntentForRoute(route).closedLimit).toBe(30)
+    expect(
+      snapshotIntentForRoute(route, undefined, undefined, { closedLimit: 90 }).closedLimit,
+    ).toBe(90)
+  })
+
+  it('leaves closed issues unpaged in the list layout', () => {
+    const route = parseRoute(new URL('https://daemon.example/kata?view=logbook'))
+    if (route.kind === 'route-error') throw new Error('expected a Kata route')
+
+    expect(
+      snapshotIntentForRoute(route, undefined, undefined, { closedLimit: 90 }),
+    ).not.toHaveProperty('closedLimit')
+  })
+
   it('keeps an explicit status filter on the board', () => {
     const route = parseRoute(new URL('https://daemon.example/kata?layout=board&status=open'))
     if (route.kind === 'route-error') throw new Error('expected a Kata route')
@@ -254,6 +273,7 @@ describe('createUISnapshotRequest', () => {
         includeGraph: true,
         includeHistory: false,
         timeZone: 'America/New_York',
+        closedLimit: 60,
       },
       { signal, etag: '"previous"', full: false },
     )
@@ -268,6 +288,7 @@ describe('createUISnapshotRequest', () => {
         include_graph: true,
         include_history: false,
         time_zone: 'America/New_York',
+        closed_limit: 60,
       },
       { signal, headers: { 'If-None-Match': '"previous"' } },
     )

@@ -15,6 +15,8 @@ export interface BoardIssue {
   priority?: number | undefined
   updated_at: string
   closed_at?: string | undefined
+  parent?: { uid: string } | undefined
+  child_counts?: { open: number; total: number } | undefined
 }
 
 export interface BoardColumn<T extends BoardIssue> {
@@ -22,7 +24,10 @@ export interface BoardColumn<T extends BoardIssue> {
   kind: 'open' | 'label' | 'done'
   title: string
   label?: string
+  /** Cards in display order: each parent is followed by its children in this column. */
   issues: T[]
+  /** Nesting depth of each card: 0 for top level, 1 for a child, and so on. */
+  depths: Map<string, number>
   /** Issues that belong in the column, including any Done hides past its limit. */
   total: number
 }
@@ -65,19 +70,39 @@ export function boardColumnsFromMetadata(metadata: Record<string, unknown> | und
 export function buildBoard<T extends BoardIssue>(
   issues: readonly T[],
   labels: readonly string[],
-  options: { doneLimit?: number; pending?: ReadonlyMap<string, BoardColumnID> } = {},
+  options: {
+    doneLimit?: number
+    pending?: ReadonlyMap<string, BoardColumnID>
+    /** Closed issues the server counted; Done then shows every closed issue given. */
+    doneTotal?: number | undefined
+  } = {},
 ): Board<T> {
   const columnLabels = normalizeBoardColumns(labels)
-  const open: BoardColumn<T> = { id: 'open', kind: 'open', title: 'Open', issues: [], total: 0 }
+  const open: BoardColumn<T> = {
+    id: 'open',
+    kind: 'open',
+    title: 'Open',
+    issues: [],
+    depths: new Map(),
+    total: 0,
+  }
   const labelColumns = columnLabels.map<BoardColumn<T>>((label) => ({
     id: labelColumnID(label),
     kind: 'label',
     title: label,
     label,
     issues: [],
+    depths: new Map(),
     total: 0,
   }))
-  const done: BoardColumn<T> = { id: 'done', kind: 'done', title: 'Done', issues: [], total: 0 }
+  const done: BoardColumn<T> = {
+    id: 'done',
+    kind: 'done',
+    title: 'Done',
+    issues: [],
+    depths: new Map(),
+    total: 0,
+  }
   const columns = [open, ...labelColumns, done]
   const byID = new Map(columns.map((column) => [column.id, column]))
 
@@ -89,11 +114,52 @@ export function buildBoard<T extends BoardIssue>(
 
   for (const column of columns) {
     column.issues.sort(column.kind === 'done' ? byClosedDesc : byPriorityThenUpdated)
+    nestChildren(column)
     column.total = column.issues.length
   }
-  const limit = options.doneLimit ?? defaultDoneLimit
-  if (done.issues.length > limit) done.issues = done.issues.slice(0, limit)
+  if (options.doneTotal !== undefined) {
+    done.total = Math.max(options.doneTotal, done.issues.length)
+  } else {
+    const limit = options.doneLimit ?? defaultDoneLimit
+    if (done.issues.length > limit) done.issues = done.issues.slice(0, limit)
+  }
   return { columns }
+}
+
+/** True when an issue has subtasks, which the board shows as an epic. */
+export function isEpic(issue: BoardIssue): boolean {
+  return (issue.child_counts?.total ?? 0) > 0
+}
+
+// Reorders an already sorted column so each card's children in the same
+// column follow it directly, keeping the sort order among siblings.
+function nestChildren<T extends BoardIssue>(column: BoardColumn<T>): void {
+  const inColumn = new Set(column.issues.map((issue) => issue.uid))
+  const children = new Map<string, T[]>()
+  const roots: T[] = []
+  for (const issue of column.issues) {
+    const parent = issue.parent?.uid
+    if (parent !== undefined && parent !== issue.uid && inColumn.has(parent)) {
+      const siblings = children.get(parent) ?? []
+      siblings.push(issue)
+      children.set(parent, siblings)
+    } else {
+      roots.push(issue)
+    }
+  }
+  const ordered: T[] = []
+  const depths = new Map<string, number>()
+  const visit = (issue: T, depth: number): void => {
+    if (depths.has(issue.uid)) return
+    depths.set(issue.uid, depth)
+    ordered.push(issue)
+    for (const child of children.get(issue.uid) ?? []) visit(child, depth + 1)
+  }
+  for (const root of roots) visit(root, 0)
+  // A parent cycle has no root; keep those cards rather than dropping them.
+  for (const issue of column.issues) visit(issue, 0)
+  column.issues = ordered
+  column.depths = depths
 }
 
 export function columnFor(issue: BoardIssue, labels: readonly string[]): BoardColumnID {

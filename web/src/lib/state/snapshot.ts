@@ -2,6 +2,7 @@ import type { UISnapshotResponseBody } from '../api/generated'
 import { readUISnapshot, type ReadUISnapshotParams } from '../api/generated'
 import { AuthenticationRequiredError, isAuthenticationRequiredError } from '../auth/session'
 import { assertValidIssueScopedCapabilities } from '../auth/scopedAuthority'
+import { defaultDoneLimit } from '../kata/board'
 import type { KataRoute } from '../router'
 
 export interface SnapshotAuthority {
@@ -217,12 +218,15 @@ export interface UISnapshotIntent {
   includeHistory: boolean
   localDate?: string
   timeZone?: string
+  /** Board only: how many of the most recently closed issues to load. */
+  closedLimit?: number
 }
 
 export function snapshotIntentForRoute(
   route: Exclude<KataRoute, { kind: 'route-error' }>,
   now: Date = new Date(),
   timeZone: string = Intl.DateTimeFormat().resolvedOptions().timeZone,
+  options: { closedLimit?: number } = {},
 ): UISnapshotIntent {
   if (route.view === 'credentials') {
     return {
@@ -258,6 +262,8 @@ export function snapshotIntentForRoute(
   }
   if (route.projectUID) intent.projectUID = route.projectUID
   if (route.issueUID) intent.selectedIssueUID = route.issueUID
+  // The board's Done column pages closed issues on the server.
+  if (route.board) intent.closedLimit = options.closedLimit ?? defaultDoneLimit
   if (route.filters.text) intent.text = route.filters.text
   if (intent.view === 'today') {
     intent.localDate = localDate(now, timeZone)
@@ -289,6 +295,7 @@ export function createUISnapshotRequest(
     if (intent.selectedIssueUID) params.selected_issue_uid = intent.selectedIssueUID
     if (intent.localDate) params.local_date = intent.localDate
     if (intent.timeZone) params.time_zone = intent.timeZone
+    if (intent.closedLimit) params.closed_limit = intent.closedLimit
     const response = await request(params, {
       signal: options.signal,
       ...(options.etag ? { headers: { 'If-None-Match': options.etag } } : {}),

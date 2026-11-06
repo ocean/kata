@@ -6,7 +6,7 @@
 
   import { commentRetryIdentity } from './lib/kata/commentRetry'
   import type { KataCommentReplyIntent, KataTaskSummary } from './lib/kata/types'
-  import { boardColumnsMetadataKey, type BoardMovePlan } from './lib/kata/board'
+  import { boardColumnsMetadataKey, defaultDoneLimit, type BoardMovePlan } from './lib/kata/board'
   import AppShell from './components/AppShell.svelte'
   import KataDaemonSwitcher from './components/KataDaemonSwitcher.svelte'
   import LaunchHint from './components/LaunchHint.svelte'
@@ -124,6 +124,8 @@
   let automaticSessionAttempted: 'loopback' | 'proxy' | undefined
   let advertisedAuthentication: 'loopback' | 'login' | 'proxy' | 'unavailable' | undefined
   let preferences = $state(loadPreferences())
+  // How many closed issues the board's Done column has loaded from the server.
+  let boardClosedLimit = defaultDoneLimit
   let versionMismatch = $state(false)
   let liveUpdatesReconnecting = $state(false)
   let daemonInfos = $state<WebDaemonInfo[]>([])
@@ -410,6 +412,14 @@
       '',
       serializeRoute(next),
     )
+    if (
+      route.kind === 'route-error' ||
+      route.projectUID !== next.projectUID ||
+      route.board !== next.board ||
+      serializeFilters(route) !== serializeFilters(next)
+    ) {
+      boardClosedLimit = defaultDoneLimit
+    }
     route = next
     if (activeDaemonID) saveDaemonRoute(activeDaemonID, serializeRoute(next))
     mode = authority?.snapshot ? 'ready' : 'loading'
@@ -881,6 +891,15 @@
     )
   }
 
+  function showMoreBoardDone(): void {
+    boardClosedLimit = Math.min(boardClosedLimit + defaultDoneLimit, 1000)
+    void refreshSnapshot(false)
+  }
+
+  function serializeFilters(value: AppRoute): string {
+    return JSON.stringify(value.filters)
+  }
+
   async function saveBoardColumns(
     projectUID: string | undefined,
     columns: string[],
@@ -1182,7 +1201,9 @@
   async function refreshSnapshot(full: boolean): Promise<boolean> {
     if (route.kind === 'route-error') return false
     const requestedRoute = route
-    const baseIntent = snapshotIntentForRoute(requestedRoute)
+    const baseIntent = snapshotIntentForRoute(requestedRoute, undefined, undefined, {
+      closedLimit: boardClosedLimit,
+    })
     const intent = activeDaemonID ? { ...baseIntent, daemonID: activeDaemonID } : baseIntent
     const accepted = await snapshots.load(intent, { full })
     if (snapshots.state.authenticationRequired) {
@@ -1377,6 +1398,7 @@
         onMoveBoardIssue={moveBoardIssue}
         onCompleteBoardIssue={completeBoardIssue}
         onSaveBoardColumns={saveBoardColumns}
+        onShowMoreBoardDone={showMoreBoardDone}
       />
     {/if}
   {/if}
