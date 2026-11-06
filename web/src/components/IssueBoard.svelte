@@ -1,5 +1,14 @@
 <script lang="ts">
-  import { KbdBadge, Menu, MenuContent, MenuItem, type MenuAnchorPoint } from '@kenn-io/kit-ui'
+  import {
+    FlashBanner,
+    KbdBadge,
+    Menu,
+    MenuContent,
+    MenuItem,
+    dismissFlash,
+    showFlash,
+    type MenuAnchorPoint,
+  } from '@kenn-io/kit-ui'
   import { hashColor } from '@kenn-io/kit-ui/utils/color-hash'
   import CalendarIcon from '@lucide/svelte/icons/calendar'
   import CornerDownRightIcon from '@lucide/svelte/icons/corner-down-right'
@@ -8,7 +17,8 @@
   import EllipsisIcon from '@lucide/svelte/icons/ellipsis'
   import ListTreeIcon from '@lucide/svelte/icons/list-tree'
   import OctagonAlertIcon from '@lucide/svelte/icons/octagon-alert'
-  import { SvelteMap } from 'svelte/reactivity'
+  import { onDestroy } from 'svelte'
+  import { SvelteMap, SvelteSet } from 'svelte/reactivity'
 
   import {
     buildBoard,
@@ -68,6 +78,14 @@
   const uid = $props.id()
   const helpID = `${uid}-help`
   const pending = new SvelteMap<string, BoardColumnID>()
+  // Cards that just landed, highlighted briefly so the eye can find them.
+  const justMoved = new SvelteSet<string>()
+  const highlightMs = 1200
+  const undoMs = 10_000
+  let lastMove: { uid: string; from: BoardColumnID; flash: number } | null = null
+  onDestroy(() => {
+    if (lastMove) dismissFlash(lastMove.flash)
+  })
   let doneLimit = $state(defaultDoneLimit)
   let announcement = $state('')
   let draggingUID = $state<string | null>(null)
@@ -109,6 +127,7 @@
       completing = issue
       return
     }
+    const from = currentColumn(issue)
     pending.set(issue.uid, target)
     announcement = `Moving ${issue.title} to ${columnTitle(target)}…`
     let moved = false
@@ -117,9 +136,59 @@
     } finally {
       pending.delete(issue.uid)
     }
-    announcement = moved
-      ? `Moved ${issue.title} to ${columnTitle(target)}.`
-      : `Could not move ${issue.title}. It is back in its column.`
+    if (!moved) {
+      announcement = `Could not move ${issue.title}. It is back in its column.`
+      return
+    }
+    // The banner is a status region, so it carries the success message.
+    announcement = ''
+    highlight(issue.uid)
+    if (lastMove) dismissFlash(lastMove.flash)
+    lastMove = null
+    const message = `Moved ${issue.title} to ${columnTitle(target)}.`
+    if (from === 'done' || undoing) {
+      // Undoing a reopen would close the issue, which needs a completion note.
+      showFlash(message)
+      return
+    }
+    const flash = showFlash(message, {
+      durationMs: undoMs,
+      action: { label: 'Undo', onclick: () => void undoLastMove() },
+    })
+    lastMove = { uid: issue.uid, from, flash }
+  }
+
+  let undoing = false
+  async function undoLastMove(): Promise<void> {
+    const move = lastMove
+    lastMove = null
+    if (!move) return
+    dismissFlash(move.flash)
+    const issue = issuesByUID.get(move.uid)
+    if (!issue) return
+    undoing = true
+    try {
+      await moveTo(issue, move.from)
+    } finally {
+      undoing = false
+    }
+  }
+
+  function highlight(uid: string): void {
+    justMoved.add(uid)
+    setTimeout(() => justMoved.delete(uid), highlightMs)
+  }
+
+  function handleBoardKeydown(event: KeyboardEvent): void {
+    if (event.key.toLowerCase() !== 'z' || !(event.ctrlKey || event.metaKey) || event.shiftKey) {
+      return
+    }
+    if (!lastMove || completing) return
+    // Leave undo inside text fields (search, filters, dialogs) to the field.
+    const target = event.target as HTMLElement | null
+    if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
+    event.preventDefault()
+    void undoLastMove()
   }
 
   async function complete(request: KataTaskCloseRequest): Promise<boolean> {
@@ -349,6 +418,7 @@
                 class:pending={pending.has(issue.uid)}
                 class:closed={issue.status === 'closed'}
                 class:child={depth > 0}
+                class:just-moved={justMoved.has(issue.uid)}
                 class:compact
                 data-depth={depth}
                 style:--depth={Math.min(depth, 3)}
@@ -471,6 +541,10 @@
   </div>
   <p class="kit-sr-only" role="status" aria-live="polite">{announcement}</p>
 </section>
+
+<svelte:window onkeydown={handleBoardKeydown} />
+
+<FlashBanner top="72px" />
 
 <Menu bind:open={menuOpen} anchor={menuAnchor} returnFocus={menuReturn} align="end">
   <MenuContent ariaLabel="Move to column">
@@ -902,6 +976,35 @@
     }
   }
 
+  /* Touch: a 44×44 target for the card's move menu. */
+  @media (max-width: 640px), (pointer: coarse) {
+    .card-menu {
+      top: 0;
+      right: 0;
+      width: 44px;
+      height: 44px;
+    }
+
+    .card-top {
+      padding-inline-end: 36px;
+    }
+
+    .card.compact {
+      min-height: 44px;
+    }
+  }
+
+  /* A card that just moved flashes once so the eye can find where it landed. */
+  .card.just-moved {
+    animation: card-landed 700ms cubic-bezier(0.25, 0.1, 0.25, 1);
+  }
+
+  @keyframes card-landed {
+    from {
+      background: color-mix(in srgb, var(--accent-blue) 22%, var(--bg-surface));
+    }
+  }
+
   .column-more {
     margin: 0 var(--space-3) var(--space-3);
     padding: var(--space-2);
@@ -919,6 +1022,11 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .card.just-moved {
+      animation: none;
+      background: color-mix(in srgb, var(--accent-blue) 12%, var(--bg-surface));
+    }
+
     .board-column,
     .card,
     .card-menu {

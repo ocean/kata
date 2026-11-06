@@ -133,10 +133,11 @@ a:hover {
   border-top-color: var(--border-muted);
 }
 
-/* Drawer close buttons get a full 44×44 touch target on phones and touch
+/* Drawer and banner close buttons get a full 44×44 touch target on phones and touch
    screens; kit-ui sizes them for a mouse pointer. */
 @media (max-width: 640px), (pointer: coarse) {
-  .kit-detail-drawer__close {
+  .kit-detail-drawer__close,
+  .kit-flash-banner__dismiss {
     min-width: 44px;
     min-height: 44px;
   }

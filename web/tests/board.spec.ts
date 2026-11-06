@@ -11,6 +11,13 @@ test('a card opened on a phone fills the screen with a finger-sized close button
   const issue = await kata.seedIssue(page, credentials, { title: 'Phone-sized board card' })
   await page.goto(`${kata.origin}/kata?scope=${kata.projectUID}&layout=board`)
 
+  // The card's move menu needs a finger-sized target too.
+  const move = page.getByRole('button', { name: `Move ${issue.title}` })
+  await expect(move).toBeVisible()
+  const moveBox = await move.boundingBox()
+  expect(moveBox?.width).toBeGreaterThanOrEqual(44)
+  expect(moveBox?.height).toBeGreaterThanOrEqual(44)
+
   await page.getByRole('button', { name: issue.title, exact: true }).click()
   const drawer = page.getByRole('dialog', { name: 'Issue detail' })
   await expect(drawer).toBeVisible()

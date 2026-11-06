@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import type { ComponentProps } from 'svelte'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { dismissFlash } from '@kenn-io/kit-ui'
+
 import type { KataTaskSummary } from '../lib/kata/types'
 import IssueBoard from './IssueBoard.svelte'
 
@@ -115,7 +117,7 @@ describe('IssueBoard', () => {
       reopen: false,
       close: false,
     })
-    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('in-progress'))
+    await waitFor(() => expect(screen.getByText('Moved Triage inbox to in-progress.')).toBeTruthy())
   })
 
   it('moves a card back to Open by removing its column label', async () => {
@@ -141,7 +143,7 @@ describe('IssueBoard', () => {
     expect(within(column('in-progress')).getByText('Triage inbox')).toBeTruthy()
     finish(false)
     await waitFor(() => expect(within(column('Open')).getByText('Triage inbox')).toBeTruthy())
-    expect(screen.getByRole('status').textContent).toContain('Could not move')
+    expect(screen.getByText(/Could not move Triage inbox/)).toBeTruthy()
   })
 
   it('asks for a completion note before a card dropped on Done closes', async () => {
@@ -429,5 +431,114 @@ describe('IssueBoard collapsible columns', () => {
     cardButton('Triage inbox').focus()
     await fireEvent.keyDown(cardButton('Triage inbox'), { key: 'ArrowRight' })
     expect(document.activeElement).toBe(cardButton('Write the parser'))
+  })
+})
+
+describe('IssueBoard after a move', () => {
+  afterEach(() => {
+    cleanup()
+    dismissFlash()
+  })
+
+  it('briefly highlights the card where it landed', async () => {
+    renderMoving({ ...triage, labels: ['in-progress'] })
+
+    await fireEvent.keyDown(cardButton('Triage inbox'), { key: 'ArrowRight', altKey: true })
+
+    await waitFor(() =>
+      expect(
+        within(column('in-progress')).getByRole('button', { name: 'Triage inbox' }).closest('li')!
+          .classList,
+      ).toContain('just-moved'),
+    )
+  })
+
+  // The app refreshes the board after a move, so these tests hand the moved
+  // card back to the board the way that refresh does.
+  function renderMoving(moved: KataTaskSummary) {
+    const base: Props = {
+      issues: [triage, doing, shipped],
+      columns: ['in-progress', 'review'],
+      selectedIssueUID: null,
+      showProject: false,
+      onOpenIssue: vi.fn(),
+      onMoveIssue: vi.fn(),
+      onCompleteIssue: vi.fn(async () => true),
+    }
+    const view = render(IssueBoard, { props: base })
+    const onMoveIssue = vi.fn(async (issue: KataTaskSummary) => {
+      if (onMoveIssue.mock.calls.length === 1) {
+        await view.rerender({
+          issues: [triage, doing, shipped].map((candidate) =>
+            candidate.uid === issue.uid ? moved : candidate,
+          ),
+        })
+      }
+      return true
+    })
+    void view.rerender({ onMoveIssue })
+    return onMoveIssue
+  }
+
+  it('offers Undo, which moves the card back to the column it came from', async () => {
+    const onMoveIssue = renderMoving({ ...doing, labels: ['review', 'bug'] })
+
+    await fireEvent.keyDown(cardButton('Write the parser'), { key: 'ArrowRight', altKey: true })
+    await fireEvent.click(await screen.findByRole('button', { name: 'Undo' }))
+
+    expect(onMoveIssue).toHaveBeenCalledTimes(2)
+    expect(onMoveIssue).toHaveBeenLastCalledWith(expect.objectContaining({ uid: 'u-doing' }), {
+      addLabel: 'in-progress',
+      removeLabels: ['review'],
+      reopen: false,
+      close: false,
+    })
+  })
+
+  it('undoes the last move with Ctrl+Z on the board', async () => {
+    const onMoveIssue = renderMoving({ ...triage, labels: ['in-progress'] })
+
+    await fireEvent.keyDown(cardButton('Triage inbox'), { key: 'ArrowRight', altKey: true })
+    await screen.findByRole('button', { name: 'Undo' })
+    await fireEvent.keyDown(cardButton('Triage inbox'), { key: 'z', ctrlKey: true })
+
+    expect(onMoveIssue).toHaveBeenCalledTimes(2)
+    expect(onMoveIssue).toHaveBeenLastCalledWith(expect.objectContaining({ uid: 'u-triage' }), {
+      removeLabels: ['in-progress'],
+      reopen: false,
+      close: false,
+    })
+  })
+
+  it('leaves Ctrl+Z in a text field to the field', async () => {
+    const onMoveIssue = renderMoving({ ...triage, labels: ['in-progress'] })
+    const field = document.createElement('input')
+    document.body.append(field)
+
+    await fireEvent.keyDown(cardButton('Triage inbox'), { key: 'ArrowRight', altKey: true })
+    await screen.findByRole('button', { name: 'Undo' })
+    await fireEvent.keyDown(field, { key: 'z', ctrlKey: true })
+
+    expect(onMoveIssue).toHaveBeenCalledOnce()
+    field.remove()
+  })
+
+  it('does not offer Undo when the move reopened a closed card', async () => {
+    renderBoard()
+    const transfer = {
+      setData: vi.fn(),
+      getData: () => 'u-shipped',
+      effectAllowed: '',
+      dropEffect: '',
+    }
+
+    await fireEvent.dragStart(within(column('Done')).getByRole('listitem'), {
+      dataTransfer: transfer,
+    })
+    await fireEvent.dragOver(column('review'), { dataTransfer: transfer })
+    await fireEvent.drop(column('review'), { dataTransfer: transfer })
+
+    await screen.findByText('Moved Ship the release to review.')
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull()
   })
 })
