@@ -112,6 +112,44 @@ describe('canonical Kata routes', () => {
   })
 })
 
+describe('board layout', () => {
+  const projectUID = '01HZNQ7VFPK1XGD8R5MABCD4EW'
+
+  it('round-trips the board layout beside scope, issue, and filters', () => {
+    const route = parseRoute(
+      new URL(
+        `https://daemon.example/kata?layout=board&scope=${projectUID}&issue=${issueUID}&owner=alex`,
+      ),
+    )
+
+    expect(route).toMatchObject({ kind: 'kata', board: true, projectUID, issueUID, graph: false })
+    expect(serializeRoute(route)).toBe(
+      `/kata?scope=${projectUID}&issue=${issueUID}&layout=board&owner=alex`,
+    )
+  })
+
+  it('leaves the list layout out of the URL', () => {
+    const route = parseRoute(new URL(`https://daemon.example/kata?scope=${projectUID}`))
+
+    expect(route).not.toHaveProperty('board')
+    expect(serializeRoute(route)).toBe(`/kata?scope=${projectUID}`)
+  })
+
+  it('ignores layout values other than board', () => {
+    expect(parseRoute(new URL('https://daemon.example/kata?layout=grid'))).not.toHaveProperty(
+      'board',
+    )
+  })
+
+  it('never combines the board with the reachable graph', () => {
+    const route = parseRoute(
+      new URL(`https://daemon.example/kata?layout=board&issue=${issueUID}&graph=1`),
+    )
+
+    expect(route).toMatchObject({ board: true, graph: false })
+  })
+})
+
 describe('screen names', () => {
   it.each([
     ['', 'inbox'],
@@ -123,6 +161,9 @@ describe('screen names', () => {
     [`?scope=${issueUID}`, 'issues'],
     [`?issue=${issueUID}`, 'issue'],
     [`?issue=${issueUID}&graph=1`, 'graph'],
+    ['?layout=board', 'board'],
+    [`?scope=${issueUID}&layout=board`, 'board'],
+    [`?layout=board&issue=${issueUID}`, 'issue'],
     [`?view=credentials&issue=${issueUID}`, 'credentials'],
     ['?view=unknown', undefined],
   ])('maps %s to %s', (query, screen) => {

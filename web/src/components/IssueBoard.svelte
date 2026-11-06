@@ -1,0 +1,742 @@
+<script lang="ts">
+  import { KbdBadge, Menu, MenuContent, MenuItem, type MenuAnchorPoint } from '@kenn-io/kit-ui'
+  import { hashColor } from '@kenn-io/kit-ui/utils/color-hash'
+  import CalendarIcon from '@lucide/svelte/icons/calendar'
+  import EllipsisIcon from '@lucide/svelte/icons/ellipsis'
+  import ListTreeIcon from '@lucide/svelte/icons/list-tree'
+  import OctagonAlertIcon from '@lucide/svelte/icons/octagon-alert'
+  import { SvelteMap } from 'svelte/reactivity'
+
+  import {
+    buildBoard,
+    columnFor,
+    defaultDoneLimit,
+    planBoardMove,
+    type BoardColumn,
+    type BoardColumnID,
+    type BoardMovePlan,
+  } from '../lib/kata/board'
+  import type { KataTaskCloseRequest, KataTaskSummary } from '../lib/kata/types'
+  import CompleteIssueDialog from './CompleteIssueDialog.svelte'
+
+  interface Props {
+    issues: readonly KataTaskSummary[]
+    /** Ordered labels between Open and Done. */
+    columns: readonly string[]
+    selectedIssueUID: string | null
+    /** Show each card's project, for boards that span projects. */
+    showProject: boolean
+    loading?: boolean | undefined
+    /** Set when cards cannot move; the board shows it and stays read-only. */
+    moveBlockedReason?: string | undefined
+    onOpenIssue: (issue: KataTaskSummary) => void
+    onMoveIssue: (issue: KataTaskSummary, plan: BoardMovePlan) => Promise<boolean>
+    onCompleteIssue: (issue: KataTaskSummary, request: KataTaskCloseRequest) => Promise<boolean>
+  }
+
+  let {
+    issues,
+    columns,
+    selectedIssueUID,
+    showProject,
+    loading = false,
+    moveBlockedReason = undefined,
+    onOpenIssue,
+    onMoveIssue,
+    onCompleteIssue,
+  }: Props = $props()
+
+  const uid = $props.id()
+  const helpID = `${uid}-help`
+  const pending = new SvelteMap<string, BoardColumnID>()
+  let doneLimit = $state(defaultDoneLimit)
+  let announcement = $state('')
+  let draggingUID = $state<string | null>(null)
+  let dropTarget = $state<BoardColumnID | null>(null)
+  let completing = $state<KataTaskSummary | null>(null)
+  let menuIssue = $state<KataTaskSummary | null>(null)
+  let menuOpen = $state(false)
+  let menuAnchor = $state<MenuAnchorPoint | undefined>()
+  let menuReturn = $state<HTMLElement | undefined>()
+  let boardElement = $state<HTMLElement>()
+
+  let canMove = $derived(moveBlockedReason === undefined)
+  let board = $derived(buildBoard(issues, columns, { doneLimit, pending }))
+  let columnLabels = $derived(new Set(columns))
+  let issuesByUID = $derived(new Map(issues.map((issue) => [issue.uid, issue])))
+  const today = new Date().toISOString().slice(0, 10)
+
+  function columnTitle(id: BoardColumnID): string {
+    return board.columns.find((column) => column.id === id)?.title ?? id
+  }
+
+  function currentColumn(issue: KataTaskSummary): BoardColumnID {
+    return pending.get(issue.uid) ?? columnFor(issue, columns)
+  }
+
+  async function moveTo(issue: KataTaskSummary, target: BoardColumnID): Promise<void> {
+    if (!canMove || pending.has(issue.uid)) return
+    const plan = planBoardMove(issue, target, columns)
+    if (!plan) return
+    if (plan.close) {
+      completing = issue
+      return
+    }
+    pending.set(issue.uid, target)
+    announcement = `Moving ${issue.title} to ${columnTitle(target)}…`
+    let moved = false
+    try {
+      moved = await onMoveIssue(issue, plan)
+    } finally {
+      pending.delete(issue.uid)
+    }
+    announcement = moved
+      ? `Moved ${issue.title} to ${columnTitle(target)}.`
+      : `Could not move ${issue.title}. It is back in its column.`
+  }
+
+  async function complete(request: KataTaskCloseRequest): Promise<boolean> {
+    const issue = completing
+    if (!issue) return false
+    pending.set(issue.uid, 'done')
+    completing = null
+    announcement = `Completing ${issue.title}…`
+    let closed = false
+    try {
+      closed = await onCompleteIssue(issue, request)
+    } finally {
+      pending.delete(issue.uid)
+    }
+    announcement = closed ? `Completed ${issue.title}.` : `Could not complete ${issue.title}.`
+    return closed
+  }
+
+  function adjacentColumn(issue: KataTaskSummary, step: -1 | 1): BoardColumnID | undefined {
+    const index = board.columns.findIndex((column) => column.id === currentColumn(issue))
+    return board.columns[index + step]?.id
+  }
+
+  function focusCard(uid: string): void {
+    queueMicrotask(() => {
+      const cards = boardElement?.querySelectorAll<HTMLElement>('[data-card-uid]') ?? []
+      for (const card of cards) if (card.dataset.cardUid === uid) card.focus()
+    })
+  }
+
+  function handleCardKeydown(event: KeyboardEvent, issue: KataTaskSummary): void {
+    const horizontal = event.key === 'ArrowLeft' || event.key === 'ArrowRight'
+    const vertical = event.key === 'ArrowUp' || event.key === 'ArrowDown'
+    if (!horizontal && !vertical) return
+    event.preventDefault()
+    const step = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1
+    if (event.altKey && horizontal) {
+      const target = adjacentColumn(issue, step)
+      if (target) {
+        void moveTo(issue, target)
+        focusCard(issue.uid)
+      }
+      return
+    }
+    const columnIndex = board.columns.findIndex((column) => column.id === currentColumn(issue))
+    const cards = board.columns[columnIndex]?.issues ?? []
+    const row = cards.findIndex((card) => card.uid === issue.uid)
+    if (vertical) {
+      const next = cards[row + step]
+      if (next) focusCard(next.uid)
+      return
+    }
+    // Left/Right: the nearest card at the same height in the next non-empty column.
+    for (
+      let index = columnIndex + step;
+      index >= 0 && index < board.columns.length;
+      index += step
+    ) {
+      const target = board.columns[index]!.issues
+      if (target.length === 0) continue
+      focusCard(target[Math.min(row, target.length - 1)]!.uid)
+      return
+    }
+  }
+
+  function openMenu(event: MouseEvent, issue: KataTaskSummary): void {
+    const button = event.currentTarget as HTMLElement
+    const rect = button.getBoundingClientRect()
+    menuIssue = issue
+    menuAnchor = { x: rect.right, y: rect.bottom + 4 }
+    menuReturn = button
+    menuOpen = true
+  }
+
+  function handleDragStart(event: DragEvent, issue: KataTaskSummary): void {
+    if (!canMove || pending.has(issue.uid)) {
+      event.preventDefault()
+      return
+    }
+    draggingUID = issue.uid
+    event.dataTransfer?.setData('text/plain', issue.uid)
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+  }
+
+  function handleDragOver(event: DragEvent, column: BoardColumn<KataTaskSummary>): void {
+    if (!draggingUID) return
+    event.preventDefault()
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+    dropTarget = column.id
+  }
+
+  function handleDragLeave(event: DragEvent, column: BoardColumn<KataTaskSummary>): void {
+    const next = event.relatedTarget as Node | null
+    if (next && (event.currentTarget as HTMLElement).contains(next)) return
+    if (dropTarget === column.id) dropTarget = null
+  }
+
+  function handleDrop(event: DragEvent, column: BoardColumn<KataTaskSummary>): void {
+    event.preventDefault()
+    const uid = draggingUID ?? event.dataTransfer?.getData('text/plain')
+    draggingUID = null
+    dropTarget = null
+    const issue = uid ? issuesByUID.get(uid) : undefined
+    if (issue) void moveTo(issue, column.id)
+  }
+
+  function endDrag(): void {
+    draggingUID = null
+    dropTarget = null
+  }
+
+  function columnColor(column: BoardColumn<KataTaskSummary>): string {
+    if (column.kind === 'open') return 'var(--text-muted)'
+    if (column.kind === 'done') return 'var(--accent-green)'
+    return hashColor(column.label ?? '')
+  }
+
+  function cardCount(count: number): string {
+    return `${count} ${count === 1 ? 'card' : 'cards'}`
+  }
+
+  function deadlineOf(issue: KataTaskSummary): string | undefined {
+    return (issue.deadline_on_date ?? issue.metadata.deadline_on)?.slice(0, 10)
+  }
+
+  function shortDate(value: string): string {
+    const date = new Date(`${value}T00:00:00`)
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  }
+</script>
+
+<section
+  class="board"
+  aria-label="Issue board"
+  aria-busy={loading}
+  aria-describedby={helpID}
+  bind:this={boardElement}
+>
+  <p class="board-note" class:board-note--hint={!moveBlockedReason} id={helpID}>
+    {#if moveBlockedReason}
+      <OctagonAlertIcon size={12} strokeWidth={2} aria-hidden="true" />
+      {moveBlockedReason}
+    {:else}
+      Drag cards between columns, or focus a card and press
+      <KbdBadge keys={['Alt', '←']} joiner="plus" ariaLabel="Alt plus Left arrow" /> or
+      <KbdBadge keys={['Alt', '→']} joiner="plus" ariaLabel="Alt plus Right arrow" />.
+    {/if}
+  </p>
+  <div class="board-columns">
+    {#each board.columns as column (column.id)}
+      {@const headingID = `board-heading-${column.id}`}
+      <section
+        class="board-column"
+        class:drop-target={dropTarget === column.id && draggingUID !== null}
+        class:column--done={column.kind === 'done'}
+        aria-label={`${column.title}, ${cardCount(column.total)}`}
+        style:--column-color={columnColor(column)}
+        ondragover={(event) => handleDragOver(event, column)}
+        ondragleave={(event) => handleDragLeave(event, column)}
+        ondrop={(event) => handleDrop(event, column)}
+      >
+        <header class="column-header">
+          <span class="column-dot" aria-hidden="true"></span>
+          <h2 id={headingID} class="column-title" title={column.title}>{column.title}</h2>
+          <span class="column-count" aria-hidden="true">{column.total}</span>
+        </header>
+        {#if column.issues.length === 0}
+          <p class="column-empty">
+            {column.kind === 'done' ? 'Nothing done yet' : 'No cards'}
+          </p>
+        {:else}
+          <ul class="column-cards" aria-labelledby={headingID}>
+            {#each column.issues as issue (issue.uid)}
+              {@const titleID = `board-card-title-${issue.uid}`}
+              {@const metaID = `board-card-meta-${issue.uid}`}
+              {@const extraLabels = (issue.labels ?? []).filter(
+                (label) => !columnLabels.has(label),
+              )}
+              {@const deadline = deadlineOf(issue)}
+              {@const blockers = issue.open_blocked_by?.length ?? 0}
+              <li
+                class="card"
+                class:selected={issue.uid === selectedIssueUID}
+                class:dragging={issue.uid === draggingUID}
+                class:pending={pending.has(issue.uid)}
+                class:closed={issue.status === 'closed'}
+                draggable={canMove ? 'true' : 'false'}
+                ondragstart={(event) => handleDragStart(event, issue)}
+                ondragend={endDrag}
+              >
+                <button
+                  type="button"
+                  class="card-open"
+                  data-card-uid={issue.uid}
+                  aria-labelledby={titleID}
+                  aria-describedby={metaID}
+                  aria-current={issue.uid === selectedIssueUID ? 'true' : undefined}
+                  aria-keyshortcuts={canMove ? 'Alt+ArrowLeft Alt+ArrowRight' : undefined}
+                  onclick={() => onOpenIssue(issue)}
+                  onkeydown={(event) => handleCardKeydown(event, issue)}
+                ></button>
+                <div class="card-top">
+                  <span class="card-id" title={issue.qualified_id}>{issue.short_id}</span>
+                  {#if issue.priority !== undefined}
+                    <span class={`card-priority priority-${issue.priority}`}>P{issue.priority}</span
+                    >
+                  {/if}
+                  {#if showProject}
+                    <span class="card-project">{issue.project_name}</span>
+                  {/if}
+                </div>
+                <p class="card-title" id={titleID}>{issue.title}</p>
+                <div class="card-meta" id={metaID}>
+                  {#if blockers > 0}
+                    <span class="meta blocked" title="Open blockers">
+                      <OctagonAlertIcon size={11} strokeWidth={2} aria-hidden="true" />
+                      <span class="kit-sr-only">Blocked by</span>
+                      {blockers}
+                    </span>
+                  {/if}
+                  {#if issue.child_counts && issue.child_counts.total > 0}
+                    {@const done = issue.child_counts.total - issue.child_counts.open}
+                    <span class="meta" title="Subtasks done">
+                      <ListTreeIcon size={11} strokeWidth={2} aria-hidden="true" />
+                      <span class="kit-sr-only">Subtasks done</span>
+                      {done}/{issue.child_counts.total}
+                    </span>
+                  {/if}
+                  {#if deadline && issue.status === 'open'}
+                    <span class="meta" class:overdue={deadline < today} title="Deadline">
+                      <CalendarIcon size={11} strokeWidth={2} aria-hidden="true" />
+                      <span class="kit-sr-only">Due</span>
+                      {shortDate(deadline)}
+                    </span>
+                  {/if}
+                  {#each extraLabels as label (label)}
+                    <span class="meta label" style:--label-color={hashColor(label)}>{label}</span>
+                  {/each}
+                  {#if issue.owner}
+                    <span class="meta owner"
+                      ><span class="kit-sr-only">Owner</span>{issue.owner}</span
+                    >
+                  {/if}
+                </div>
+                {#if canMove}
+                  <button
+                    type="button"
+                    class="card-menu"
+                    aria-label={`Move ${issue.title}`}
+                    aria-haspopup="menu"
+                    title="Move to…"
+                    tabindex="-1"
+                    disabled={pending.has(issue.uid)}
+                    onclick={(event) => openMenu(event, issue)}
+                  >
+                    <EllipsisIcon size={14} strokeWidth={2} aria-hidden="true" />
+                  </button>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        {#if column.kind === 'done' && column.total > column.issues.length}
+          {@const more = Math.min(defaultDoneLimit, column.total - column.issues.length)}
+          <button
+            type="button"
+            class="column-more"
+            onclick={() => {
+              doneLimit += defaultDoneLimit
+            }}>Show {more} more</button
+          >
+        {/if}
+      </section>
+    {/each}
+  </div>
+  <p class="kit-sr-only" role="status" aria-live="polite">{announcement}</p>
+</section>
+
+<Menu bind:open={menuOpen} anchor={menuAnchor} returnFocus={menuReturn} align="end">
+  <MenuContent ariaLabel="Move to column">
+    {#if menuIssue}
+      {@const issue = menuIssue}
+      {#each board.columns.filter((column) => column.id !== currentColumn(issue)) as column (column.id)}
+        <MenuItem onselect={() => void moveTo(issue, column.id)}>{column.title}</MenuItem>
+      {/each}
+    {/if}
+  </MenuContent>
+</Menu>
+
+<CompleteIssueDialog
+  open={completing !== null}
+  title={completing?.title ?? ''}
+  qualifiedId={completing?.qualified_id ?? ''}
+  onComplete={complete}
+  onCancel={() => {
+    completing = null
+  }}
+/>
+
+<style>
+  .board {
+    min-width: 0;
+    min-height: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-primary);
+  }
+
+  .board-note {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin: 0;
+    padding: var(--space-2) var(--space-5) 0;
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+  }
+
+  .board-columns {
+    min-height: 0;
+    flex: 1;
+    display: flex;
+    gap: var(--space-4);
+    padding: var(--space-3) var(--space-5) var(--space-5);
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity;
+  }
+
+  .board-column {
+    /* Fixed-width columns that share any spare width, up to a readable max. */
+    flex: 1 0 264px;
+    max-width: 380px;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-md);
+    background: var(--bg-inset);
+    scroll-snap-align: start;
+    transition:
+      border-color 120ms ease,
+      background-color 120ms ease;
+  }
+
+  .board-column.drop-target {
+    border-color: var(--column-color);
+    background: color-mix(in srgb, var(--column-color) 8%, var(--bg-inset));
+  }
+
+  .column-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-top: 2px solid var(--column-color);
+    border-start-start-radius: var(--radius-md);
+    border-start-end-radius: var(--radius-md);
+  }
+
+  .column-dot {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 auto;
+    border-radius: var(--radius-dot);
+    background: var(--column-color);
+  }
+
+  .column-title {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-semibold);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .column-count {
+    margin-inline-start: auto;
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .column-empty {
+    margin: 0 var(--space-3) var(--space-3);
+    padding: var(--space-5) var(--space-3);
+    border: 1px dashed var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+    text-align: center;
+  }
+
+  .column-cards {
+    min-height: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    margin: 0;
+    padding: 0 var(--space-3) var(--space-3);
+    overflow-y: auto;
+    list-style: none;
+  }
+
+  .card {
+    position: relative;
+    display: grid;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    box-shadow: var(--shadow-sm);
+    cursor: pointer;
+    transition:
+      border-color 120ms ease,
+      box-shadow 120ms ease,
+      opacity 120ms ease;
+  }
+
+  .card[draggable='true'] {
+    cursor: grab;
+  }
+
+  .card:hover {
+    border-color: var(--text-muted);
+  }
+
+  .card.selected {
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 1px var(--accent-blue);
+  }
+
+  .card.dragging {
+    opacity: 0.4;
+  }
+
+  .card.pending {
+    opacity: 0.65;
+  }
+
+  .card.closed .card-title {
+    color: var(--text-secondary);
+  }
+
+  /* The card's whole surface is one button; its text sits above it, and
+     pointer events fall through to the button so the card stays one target. */
+  .card-open {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: inherit;
+    background: transparent;
+    cursor: inherit;
+  }
+
+  .card-open:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 1px;
+  }
+
+  .card-top,
+  .card-title,
+  .card-meta {
+    position: relative;
+    pointer-events: none;
+  }
+
+  .card-top {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    padding-inline-end: 22px;
+  }
+
+  .card-id {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-2xs);
+  }
+
+  .card-project {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: var(--font-size-2xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .card-priority {
+    padding: 0 5px;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--text-muted) 14%, transparent);
+    color: var(--text-secondary);
+    font-size: var(--font-size-2xs);
+    font-weight: var(--font-weight-semibold);
+    line-height: 16px;
+  }
+
+  .priority-0 {
+    background: color-mix(in srgb, var(--accent-red) 14%, transparent);
+    color: color-mix(in srgb, var(--accent-red) 80%, var(--text-primary));
+  }
+
+  .priority-1 {
+    background: color-mix(in srgb, var(--accent-amber) 14%, transparent);
+    color: color-mix(in srgb, var(--accent-amber) 70%, var(--text-primary));
+  }
+
+  .card-title {
+    display: -webkit-box;
+    margin: 0;
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+  }
+
+  .card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .card-meta:empty {
+    display: none;
+  }
+
+  .meta {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    color: var(--text-muted);
+    font-size: var(--font-size-2xs);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .meta.blocked,
+  .meta.overdue {
+    color: var(--accent-red);
+  }
+
+  .meta.label {
+    padding: 0 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--label-color) 12%, transparent);
+    /* Pull the hue toward the text color so every palette entry clears 4.5:1. */
+    color: color-mix(in srgb, var(--label-color) 55%, var(--text-primary));
+    line-height: 16px;
+  }
+
+  .meta.owner {
+    margin-inline-start: auto;
+    color: var(--text-secondary);
+  }
+
+  .card-menu {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+
+  .card:hover .card-menu,
+  .card:focus-within .card-menu,
+  .card-menu:focus-visible {
+    opacity: 1;
+  }
+
+  .card-menu:hover {
+    background: var(--bg-surface-hover);
+    color: var(--text-primary);
+  }
+
+  @media (hover: none) {
+    .card-menu {
+      opacity: 1;
+    }
+  }
+
+  .column-more {
+    margin: 0 var(--space-3) var(--space-3);
+    padding: var(--space-2);
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--accent-blue);
+    font: inherit;
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+  }
+
+  .column-more:hover {
+    background: var(--bg-surface-hover);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .board-column,
+    .card,
+    .card-menu {
+      transition: none;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .board-note--hint {
+      display: none;
+    }
+
+    .board-columns {
+      padding-inline: var(--space-4);
+      scroll-snap-type: x mandatory;
+    }
+
+    .board-column {
+      flex: 0 0 min(300px, calc(100vw - 48px));
+    }
+  }
+</style>

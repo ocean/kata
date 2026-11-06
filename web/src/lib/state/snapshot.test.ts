@@ -138,6 +138,33 @@ describe('SnapshotController', () => {
 })
 
 describe('snapshotIntentForRoute', () => {
+  it('loads open and closed issues for the board so Done has cards', () => {
+    const route = parseRoute(new URL('https://daemon.example/kata?layout=board'))
+    if (route.kind === 'route-error') throw new Error('expected a Kata route')
+
+    const intent = snapshotIntentForRoute(route, new Date('2026-09-01T00:30:00Z'), 'UTC')
+
+    expect(intent.view).toBe('all-open')
+    expect(intent.statuses).toEqual(['all'])
+  })
+
+  it('shows the whole scope on the board whatever system view the URL names', () => {
+    const route = parseRoute(new URL('https://daemon.example/kata?view=today&layout=board'))
+    if (route.kind === 'route-error') throw new Error('expected a Kata route')
+
+    const intent = snapshotIntentForRoute(route, new Date('2026-09-01T00:30:00Z'), 'UTC')
+
+    expect(intent.view).toBe('all-open')
+    expect(intent.localDate).toBeUndefined()
+  })
+
+  it('keeps an explicit status filter on the board', () => {
+    const route = parseRoute(new URL('https://daemon.example/kata?layout=board&status=open'))
+    if (route.kind === 'route-error') throw new Error('expected a Kata route')
+
+    expect(snapshotIntentForRoute(route).statuses).toEqual(['open'])
+  })
+
   it('includes the browser timezone for non-calendar collections', () => {
     const route = parseRoute(new URL('https://daemon.example/kata?view=all-open'))
     if (route.kind === 'route-error') throw new Error('expected a Kata route')

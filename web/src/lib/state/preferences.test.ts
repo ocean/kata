@@ -42,6 +42,17 @@ describe('origin-local preferences', () => {
     })
   })
 
+  it('keeps the cross-project board columns in the order the user chose', () => {
+    const storage = new MapStorage()
+    savePreferences({ ...defaultPreferences, boardColumns: ['review', 'doing', 'review'] }, storage)
+
+    expect(loadPreferences(storage).boardColumns).toEqual(['review', 'doing'])
+  })
+
+  it('defaults the cross-project board to the in-progress column', () => {
+    expect(loadPreferences(new MapStorage()).boardColumns).toEqual(['in-progress'])
+  })
+
   it('reports degraded origins without copying preference state', () => {
     expect(originStabilityWarning(false)).toContain('temporary browser origin')
     expect(originStabilityWarning(true)).toBeUndefined()

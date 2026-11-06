@@ -1,7 +1,7 @@
 ---
 title: Web UI
 description: Browse and manage Kata projects and issues in the daemon-served browser application.
-last_edited: 2026-11-04
+last_edited: 2026-11-06
 ---
 
 # Web UI
@@ -89,6 +89,38 @@ moves into a drawer, and filter controls wrap to fit the list pane, including
 side-by-side detail layouts.
 
 ![Kata Web UI showing a synthetic project and issue hierarchy](/docs/assets/screenshots/web-ui/workspace.png)
+
+## Work on a board
+
+Switch the header's **List**/**Board** control to **Board** to see a project, or
+all open work across projects, as columns of cards. Each card shows its ID,
+priority, title, owner, open blocker count, subtask progress, deadline, and any
+labels that are not board columns. The layout stays in the URL as
+`layout=board`, so a board is bookmarkable. Choosing a project in the sidebar
+keeps the board; choosing Inbox, Today, Delegated, or Scheduled returns to the
+list.
+
+Kata stores only open and closed, so the board builds its middle columns from
+labels:
+
+| Column | Holds | Moving a card here |
+| --- | --- | --- |
+| Open | Open issues with none of the board's column labels | Removes the issue's column labels |
+| A label column | Open issues carrying that label; an issue with several column labels sits in the first | Adds the label, removes other column labels, and reopens a closed issue |
+| Done | Closed issues, newest first, 30 at a time | Opens the **Complete task** form, which asks for a reason, note, and evidence before closing |
+
+Move a card by dragging it, from its **Move to…** menu, or by focusing it and
+pressing **Alt+←** or **Alt+→**. Arrow keys move focus between cards and
+columns. Select a card to open its full detail in a side drawer; **Esc** closes
+it.
+
+**Edit board columns** (the columns icon beside the filters) adds, orders, and
+removes label columns. A project board saves its columns to the project's
+`board_columns` metadata, so everyone who opens that project's board sees the
+same columns; this needs a credential that can change project settings. The
+board across all projects saves its columns in the browser. New boards start
+with one `in-progress` column. Read-only and stale sessions show the board but
+do not move cards.
 
 ## Manage an issue
 

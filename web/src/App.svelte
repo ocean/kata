@@ -5,7 +5,8 @@
   import { SvelteMap } from 'svelte/reactivity'
 
   import { commentRetryIdentity } from './lib/kata/commentRetry'
-  import type { KataCommentReplyIntent } from './lib/kata/types'
+  import type { KataCommentReplyIntent, KataTaskSummary } from './lib/kata/types'
+  import { boardColumnsMetadataKey, type BoardMovePlan } from './lib/kata/board'
   import AppShell from './components/AppShell.svelte'
   import KataDaemonSwitcher from './components/KataDaemonSwitcher.svelte'
   import LaunchHint from './components/LaunchHint.svelte'
@@ -832,6 +833,75 @@
     )
   }
 
+  // Board cards act on any issue in the collection, not only the selected one.
+  async function moveBoardIssue(issue: KataTaskSummary, plan: BoardMovePlan): Promise<boolean> {
+    const target = { projectId: issue.project_id, ref: issue.uid }
+    // Add first, then remove, then reopen, so a failed step never strands the
+    // card in Open with no column label.
+    if (plan.addLabel !== undefined) {
+      const label = plan.addLabel
+      const added = await runMutation({ draft: label }, (context) =>
+        addLabelRequest(
+          { projectId: String(target.projectId), ref: target.ref },
+          context.body({ label }, requestActor),
+        ),
+      )
+      if (!added) return false
+    }
+    for (const label of plan.removeLabels) {
+      const removed = await runMutation({ draft: label }, () =>
+        removeLabelRequest(
+          { ...target, label },
+          authority?.snapshot?.capabilities.actor_policy === 'identity'
+            ? undefined
+            : { actor: requestActor },
+        ),
+      )
+      if (!removed) return false
+    }
+    if (plan.reopen) {
+      const reopened = await runMutation({}, (context) =>
+        reopenIssueRequest(target, context.body({}, requestActor)),
+      )
+      if (!reopened) return false
+    }
+    return true
+  }
+
+  function completeBoardIssue(
+    issue: KataTaskSummary,
+    request: KataTaskCloseRequest,
+  ): Promise<boolean> {
+    return runMutation({ draft: request, actionKind: 'issue_closed' }, (context) =>
+      closeIssueRequest(
+        { projectId: issue.project_id, ref: issue.uid },
+        context.body({ ...request }, requestActor),
+        { headers: { 'X-Kata-Surface': 'web' } },
+      ),
+    )
+  }
+
+  async function saveBoardColumns(
+    projectUID: string | undefined,
+    columns: string[],
+  ): Promise<boolean> {
+    if (projectUID === undefined) {
+      updatePreferences({ ...preferences, boardColumns: columns })
+      return true
+    }
+    const project = authority?.snapshot?.catalog
+      ?.map(({ project }) => project)
+      .find((candidate) => candidate.uid === projectUID)
+    if (!project) return false
+    return runMutation({ draft: columns, revision: `"rev-${project.revision}"` }, (context) =>
+      patchProjectMetadata(
+        { projectId: project.id },
+        { actor: requestActor, patch: { [boardColumnsMetadataKey]: columns } },
+        { headers: context.headers },
+      ),
+    )
+  }
+
   function deleteIssue(): Promise<boolean> {
     return closeIssue({
       reason: 'wontfix',
@@ -1304,6 +1374,9 @@
         onCreateRecurrence={createRecurrence}
         onPatchRecurrence={patchRecurrence}
         onDeleteRecurrence={deleteRecurrence}
+        onMoveBoardIssue={moveBoardIssue}
+        onCompleteBoardIssue={completeBoardIssue}
+        onSaveBoardColumns={saveBoardColumns}
       />
     {/if}
   {/if}

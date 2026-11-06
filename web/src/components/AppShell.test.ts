@@ -13,6 +13,131 @@ describe('AppShell', () => {
     vi.useRealTimers()
   })
 
+  describe('board layout', () => {
+    const projectUID = '01J00000000000000000000002'
+    const filters = { status: [], owner: [], label: [], relationship: [] }
+
+    test('switches a project list to its board from the layout control', async () => {
+      const onNavigate = vi.fn()
+      render(AppShell, {
+        props: {
+          route: { kind: 'kata', projectUID, graph: false, filters },
+          snapshot: snapshot(),
+          loading: false,
+          ...mutationProps(),
+          onNavigate,
+          onCreateProject: vi.fn(async () => ({ changed: true })),
+        },
+      })
+
+      await fireEvent.click(
+        within(screen.getByRole('radiogroup', { name: 'Layout' })).getByRole('radio', {
+          name: 'Board',
+        }),
+      )
+
+      expect(onNavigate).toHaveBeenCalledWith({
+        kind: 'kata',
+        projectUID,
+        graph: false,
+        board: true,
+        filters,
+      })
+    })
+
+    test('takes the project board columns from project metadata', () => {
+      const current = snapshot()
+      current.catalog[0]!.project.metadata = { board_columns: ['review'] }
+      current.collection![0]!.labels = ['review']
+      render(AppShell, {
+        props: {
+          route: { kind: 'kata', projectUID, graph: false, board: true, filters },
+          snapshot: current,
+          loading: false,
+          ...mutationProps(),
+          onNavigate: vi.fn(),
+          onCreateProject: vi.fn(async () => ({ changed: true })),
+        },
+      })
+
+      const review = screen.getByRole('region', { name: 'review, 1 card' })
+      expect(within(review).getByText('Example issue')).toBeTruthy()
+      expect(screen.getByRole('region', { name: 'Open, 0 cards' })).toBeTruthy()
+    })
+
+    test('opens a clicked card in place on the board', async () => {
+      const onNavigate = vi.fn()
+      render(AppShell, {
+        props: {
+          route: { kind: 'kata', projectUID, graph: false, board: true, filters },
+          snapshot: snapshot(),
+          loading: false,
+          ...mutationProps(),
+          onNavigate,
+          onCreateProject: vi.fn(async () => ({ changed: true })),
+        },
+      })
+
+      await fireEvent.click(screen.getByRole('button', { name: 'Example issue' }))
+
+      expect(onNavigate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectUID,
+          issueUID: '01J00000000000000000000001',
+          board: true,
+        }),
+      )
+    })
+
+    test('does not mark Inbox as current on the board across all projects', () => {
+      render(AppShell, {
+        props: {
+          route: { kind: 'kata', graph: false, board: true, filters },
+          snapshot: snapshot(),
+          loading: false,
+          ...mutationProps(),
+          onNavigate: vi.fn(),
+          onCreateProject: vi.fn(async () => ({ changed: true })),
+        },
+      })
+
+      const navigation = screen.getByRole('region', { name: 'Kata navigation' })
+      // The sidebar shows the current view with its active class.
+      expect(within(navigation).getByRole('button', { name: /Inbox/ }).classList).not.toContain(
+        'active',
+      )
+    })
+
+    test('keeps the board when another project is chosen in the sidebar', async () => {
+      const onNavigate = vi.fn()
+      render(AppShell, {
+        props: {
+          route: { kind: 'kata', view: 'all-open', graph: false, board: true, filters },
+          snapshot: snapshot(),
+          loading: false,
+          ...mutationProps(),
+          onNavigate,
+          onCreateProject: vi.fn(async () => ({ changed: true })),
+        },
+      })
+
+      await fireEvent.click(
+        within(screen.getByRole('region', { name: 'Kata navigation' })).getByRole('button', {
+          name: /example-project/,
+        }),
+      )
+
+      expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ projectUID, board: true }))
+      await fireEvent.click(screen.getByRole('button', { name: 'Today' }))
+      expect(onNavigate).toHaveBeenLastCalledWith({
+        kind: 'kata',
+        view: 'today',
+        graph: false,
+        filters,
+      })
+    })
+  })
+
   test('identifies the current browser hub when a connection needs attention', () => {
     vi.stubGlobal('location', new URL('https://daemon.example/workspace?token=never-display'))
     render(AppShell, {
@@ -1355,6 +1480,7 @@ describe('AppShell', () => {
           splitDirection: 'horizontal',
           splitSize: 420,
           collapsedGroups: [],
+          boardColumns: ['in-progress'],
         },
         onPreferencesChange,
         ...mutationProps(),

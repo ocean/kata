@@ -4,10 +4,14 @@
     DetailDrawer,
     IconButton,
     PageHeader,
+    SegmentedControl,
     Tooltip,
     TopBar,
     type TypeaheadOption,
   } from '@kenn-io/kit-ui'
+  import KanbanIcon from '@lucide/svelte/icons/square-kanban'
+  import ListIcon from '@lucide/svelte/icons/list'
+  import Columns3Icon from '@lucide/svelte/icons/columns-3'
   import LayoutPanelLeftIcon from '@lucide/svelte/icons/layout-panel-left'
   import LayoutPanelTopIcon from '@lucide/svelte/icons/layout-panel-top'
   import MonitorIcon from '@lucide/svelte/icons/monitor'
@@ -24,6 +28,7 @@
     defaultKataTaskSearchFilters,
     projectKataWorkspaceView,
   } from '../lib/kata/authority'
+  import { boardColumnsFromMetadata, type BoardMovePlan } from '../lib/kata/board'
   import { createKataLinkFilters } from '../lib/kata/linkFilters'
   import { normalizeKataUISnapshot } from '../lib/kata/projection'
   import type {
@@ -33,11 +38,14 @@
     KataTaskEditPatch,
     KataTaskSearchFilters,
     KataTaskStatusFilter,
+    KataTaskSummary,
     KataTaskViewName,
   } from '../lib/kata/types'
   import type { UISnapshot } from '../lib/state/snapshot'
   import { defaultPreferences, type Preferences } from '../lib/state/preferences'
   import AccessManagement from './AccessManagement.svelte'
+  import BoardColumnsEditor from './BoardColumnsEditor.svelte'
+  import IssueBoard from './IssueBoard.svelte'
   import type { MutationContext, MutationResult } from '../lib/mutations/controller'
   import CredentialAudit from './CredentialAudit.svelte'
   import ProjectSyncStatus from './ProjectSyncStatus.svelte'
@@ -121,6 +129,16 @@
       etag: string,
     ) => Promise<void>
     onDeleteRecurrence: (recurrence: import('../lib/kata/types').KataRecurrence) => Promise<boolean>
+    onMoveBoardIssue?:
+      | ((issue: KataTaskSummary, plan: BoardMovePlan) => Promise<boolean>)
+      | undefined
+    onCompleteBoardIssue?:
+      | ((issue: KataTaskSummary, request: KataTaskCloseRequest) => Promise<boolean>)
+      | undefined
+    /** Saves board columns to a project's metadata, or to this browser without one. */
+    onSaveBoardColumns?:
+      | ((projectUID: string | undefined, columns: string[]) => Promise<boolean>)
+      | undefined
   }
 
   let {
@@ -172,6 +190,9 @@
     onCreateRecurrence,
     onPatchRecurrence,
     onDeleteRecurrence,
+    onMoveBoardIssue = async () => false,
+    onCompleteBoardIssue = async () => false,
+    onSaveBoardColumns = async () => false,
   }: Props = $props()
 
   let connectionNow = $state(Date.now())
@@ -283,6 +304,19 @@
       ? projection.projects.find((project) => project.uid === scope.project_uid)
       : undefined
   })
+  let boardRoute = $derived(route.board === true && !credentialRoute)
+  let boardColumns = $derived(
+    selectedProject ? boardColumnsFromMetadata(selectedProject.metadata) : preferences.boardColumns,
+  )
+  let boardIssues = $derived(
+    selectedProject
+      ? projection.issues.filter((issue) => issue.project_uid === selectedProject!.uid)
+      : projection.issues,
+  )
+  let boardLabelSuggestions = $derived(
+    [...new Set(projection.issues.flatMap((issue) => issue.labels ?? []))].sort(),
+  )
+  let columnsEditorOpen = $state(false)
   let selectedCommentUID = $state<string | undefined>()
   let returnComment = $state<{ issueUID: string; commentUID: string } | undefined>()
   let selectedIssueUID = $derived(route.issueUID ?? null)
@@ -322,6 +356,13 @@
       (scopedAuthority ? 'This credential cannot create projects.' : pendingReason),
   )
 
+  let columnsEditBlockedReason = $derived(
+    selectedProject
+      ? (writeBlockedReason ??
+          (scopedAuthority ? 'This credential cannot change project settings.' : pendingReason))
+      : undefined,
+  )
+
   function navigate(next: AppRoute): void {
     const query = (next.filters.text ?? '').trim()
     if (query !== countedQuery) countedQuery = ''
@@ -336,6 +377,8 @@
       kind: 'kata',
       view: systemViewName(name),
       graph: false,
+      // The board spans a project or all open work, not the dated system views.
+      ...(route.board && name === 'all' ? { board: true as const } : {}),
       filters: emptyShareableFilters(),
     })
   }
@@ -346,6 +389,7 @@
       kind: 'kata',
       projectUID,
       graph: false,
+      ...(route.board ? { board: true as const } : {}),
       filters: emptyShareableFilters(),
     })
   }
@@ -395,12 +439,34 @@
   }
 
   function openGraph(issueUID: string): void {
-    navigate({
+    const next: AppRoute = {
       ...withResolvedView(route),
       issueUID,
       graph: true,
       filters: route.filters,
-    })
+    }
+    delete next.board
+    navigate(next)
+  }
+
+  function closeIssueDrawer(): void {
+    const next = { ...route }
+    delete next.issueUID
+    navigate(next)
+  }
+
+  function setLayout(layout: string): void {
+    const next: AppRoute = { ...route, graph: false }
+    if (layout === 'board') {
+      next.board = true
+      // The board covers a project or all open work; dated views fall back to All Open.
+      if (next.view && next.view !== 'all-open' && !next.projectUID) next.view = 'all-open'
+      else if (next.view && next.projectUID) delete next.view
+    } else {
+      delete next.board
+    }
+    // Status filters mean different defaults in each layout.
+    navigate({ ...next, filters: { ...next.filters, status: [] } })
   }
 
   function closeGraph(): void {
@@ -451,6 +517,8 @@
 
   function viewNameForRoute(current: AppRoute): KataTaskViewName {
     if (current.view === 'credentials') return 'all'
+    // The board spans a project or all open work, never a dated system view.
+    if (current.board) return 'all'
     if (current.view) return current.view === 'all-open' ? 'all' : current.view
     return current.projectUID || current.issueUID ? 'all' : 'inbox'
   }
@@ -464,6 +532,7 @@
     currentView: KataTaskViewName,
   ): KataTaskSearchFilters {
     const defaults = defaultKataTaskSearchFilters(currentView)
+    if (current.board) defaults.status = 'all'
     return {
       scope: current.projectUID
         ? { kind: 'project', project_uid: current.projectUID }
@@ -492,7 +561,7 @@
     currentView: KataTaskViewName,
     changed: keyof KataTaskSearchFilters,
   ): ShareableFilters {
-    const defaultStatus = defaultKataTaskSearchFilters(currentView).status
+    const defaultStatus = route.board ? 'all' : defaultKataTaskSearchFilters(currentView).status
     const result: ShareableFilters = {
       status:
         changed === 'status'
@@ -542,13 +611,14 @@
   <button
     type="button"
     class="accent-button header-action"
+    aria-label="New task"
     aria-disabled={newTaskBlockedReason ? 'true' : undefined}
     aria-describedby={newTaskBlockedReason ? newTaskReasonID : undefined}
     title={newTaskBlockedReason ? undefined : 'New task'}
     onclick={beginNewTask}
   >
     <PlusIcon size={13} strokeWidth={1.9} aria-hidden="true" />
-    <span>New task</span>
+    <span class="header-action-label">New task</span>
   </button>
 {/snippet}
 
@@ -632,6 +702,29 @@
           {/if}
         </IconButton>
         {#if !credentialRoute}
+          <SegmentedControl
+            class="layout-toggle"
+            ariaLabel="Layout"
+            value={boardRoute ? 'board' : 'list'}
+            options={[
+              { value: 'list', label: 'List', title: 'List and detail' },
+              { value: 'board', label: 'Board', title: 'Columns of cards' },
+            ]}
+            onchange={setLayout}
+          >
+            {#snippet segment(option)}
+              <span class="layout-segment">
+                {#if option.value === 'board'}
+                  <KanbanIcon size={14} strokeWidth={1.8} aria-hidden="true" />
+                {:else}
+                  <ListIcon size={14} strokeWidth={1.8} aria-hidden="true" />
+                {/if}
+                <span class="layout-segment-label">{option.label}</span>
+              </span>
+            {/snippet}
+          </SegmentedControl>
+        {/if}
+        {#if !credentialRoute && !boardRoute}
           <IconButton
             ariaLabel={preferences.splitDirection === 'vertical'
               ? 'Switch to side-by-side layout'
@@ -647,6 +740,8 @@
               <LayoutPanelTopIcon size={15} strokeWidth={1.8} aria-hidden="true" />
             {/if}
           </IconButton>
+        {/if}
+        {#if !credentialRoute}
           {#if newTaskBlockedReason}
             <Tooltip text={newTaskBlockedReason} align="end">
               {@render newTaskButton()}
@@ -701,7 +796,9 @@
         {#if mutationMessage}
           <p class="mutation-message" role="alert">{mutationMessage}</p>
         {/if}
-        {#if route.issueUID}
+        {#if boardRoute}
+          {@render boardPane()}
+        {:else if route.issueUID}
           <SplitLayout
             orientation={preferences.splitDirection}
             primarySize={preferences.splitSize}
@@ -720,6 +817,17 @@
     </div>
   </div>
 </section>
+
+{#if boardRoute && route.issueUID}
+  <DetailDrawer
+    title={projection.selected_detail?.issue.title ?? 'Issue'}
+    ariaLabel="Issue detail"
+    width="min(780px, 100vw)"
+    onclose={closeIssueDrawer}
+  >
+    {@render detailPane()}
+  </DetailDrawer>
+{/if}
 
 {#if mobileNavigationOpen}
   <DetailDrawer
@@ -778,6 +886,62 @@
       />
     {/if}
   </div>
+{/snippet}
+
+{#snippet boardPane()}
+  <div class="list-column board-pane">
+    <div class="board-toolbar">
+      <IssueFilters
+        filters={searchFilters}
+        projects={projection.projects}
+        onChange={updateFilters}
+        onSubmitSearch={submitSearch}
+      />
+      <span class="board-columns-action">
+        {#if columnsEditBlockedReason}
+          <Tooltip text={columnsEditBlockedReason} align="end">
+            <IconButton ariaLabel="Edit board columns" disabled>
+              <Columns3Icon size={15} strokeWidth={1.8} aria-hidden="true" />
+            </IconButton>
+          </Tooltip>
+        {:else}
+          <IconButton
+            ariaLabel="Edit board columns"
+            title="Edit board columns"
+            onclick={() => {
+              columnsEditorOpen = true
+            }}
+          >
+            <Columns3Icon size={15} strokeWidth={1.8} aria-hidden="true" />
+          </IconButton>
+        {/if}
+      </span>
+    </div>
+    <IssueBoard
+      issues={boardIssues}
+      columns={boardColumns}
+      {selectedIssueUID}
+      showProject={!selectedProject}
+      {loading}
+      moveBlockedReason={writeBlockedReason ??
+        (scopedAuthority ? 'This credential can only change one task.' : undefined)}
+      onOpenIssue={(issue) => selectIssue(issue.uid)}
+      onMoveIssue={onMoveBoardIssue}
+      onCompleteIssue={onCompleteBoardIssue}
+    />
+  </div>
+  <BoardColumnsEditor
+    open={columnsEditorOpen}
+    columns={boardColumns}
+    suggestions={boardLabelSuggestions}
+    savedWhere={selectedProject
+      ? `Saved to ${selectedProject.name} for everyone who opens its board.`
+      : 'Saved in this browser for boards that span projects.'}
+    onSave={(columns) => onSaveBoardColumns(selectedProject?.uid, columns)}
+    onClose={() => {
+      columnsEditorOpen = false
+    }}
+  />
 {/snippet}
 
 {#snippet detailPane()}
@@ -997,6 +1161,39 @@
     container-name: list-pane;
   }
 
+  .board-pane {
+    background: var(--bg-primary);
+  }
+
+  .board-toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+    padding-inline-end: var(--space-4);
+    border-bottom: 1px solid var(--border-default);
+    background: var(--bg-surface);
+  }
+
+  .board-toolbar > :global(:first-child) {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .board-toolbar :global(.kata-search-panel) {
+    border-bottom: 0;
+  }
+
+  .board-columns-action {
+    flex: 0 0 auto;
+  }
+
+  .layout-segment {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
   .detail-column {
     min-width: 0;
     width: 100%;
@@ -1038,6 +1235,18 @@
 
     .mobile-navigation-trigger {
       display: inline-flex;
+    }
+
+    .layout-segment-label {
+      display: none;
+    }
+  }
+
+  /* Phones: the header keeps every control by showing icons only; the
+     button's aria-label keeps its name. */
+  @media (max-width: 640px) {
+    .header-action-label {
+      display: none;
     }
   }
 </style>

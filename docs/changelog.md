@@ -1,7 +1,7 @@
 ---
 title: Changelog
 description: Release history for kata
-last_edited: 2026-11-05
+last_edited: 2026-11-06
 ---
 
 All notable changes to kata, grouped by release. Versioned releases start with
@@ -9,6 +9,12 @@ All notable changes to kata, grouped by release. Versioned releases start with
 
 ## Unreleased
 
+- See a project as a board in the Web UI. Switch the header to **Board** to
+  lay cards out in Open, label columns you choose, and Done; drag a card, use
+  its **Move to…** menu, or press **Alt+←**/**Alt+→** to move it, and select it
+  to read the whole issue in a drawer. Moving a card swaps its column label,
+  and dropping it on Done asks for the usual completion note and evidence. See
+  [Work on a board](guide/web-ui.md#work-on-a-board).
 - Give coding agents a shorter kata contract. The text that hooks inject,
   `kata init --with-agents` writes, and the MCP `workflow` guide serves now
   covers one agent's loop in plain prose: skip kata for questions, search with
