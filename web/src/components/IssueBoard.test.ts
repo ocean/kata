@@ -669,9 +669,18 @@ describe('IssueBoard comment badge', () => {
     expect(
       screen.getByRole('button', { name: 'Triage inbox', description: /3 comments/ }),
     ).toBeTruthy()
+    expect(card.querySelector('.comment-pill')?.classList).toContain('has-comments')
+  })
+
+  it('shows a quiet zero pill on cards without comments', () => {
+    renderBoard({ issues: [triage, doing] })
+
+    const pill = within(column('in-progress')).getByRole('listitem').querySelector('.comment-pill')
+    expect(pill?.textContent).toContain('0')
+    expect(pill?.classList).not.toContain('has-comments')
     expect(
-      within(within(column('in-progress')).getByRole('listitem')).queryByText(/comment/),
-    ).toBeNull()
+      screen.getByRole('button', { name: 'Write the parser', description: /0 comments/ }),
+    ).toBeTruthy()
   })
 
   it('uses the singular for one comment and leaves compact cards without a badge', () => {
@@ -682,7 +691,7 @@ describe('IssueBoard comment badge', () => {
     cleanup()
 
     renderBoard({ issues: [{ ...triage, comment_count: 5 }], compact: true })
-    expect(within(column('Open')).getByRole('listitem').textContent).not.toContain('5')
+    expect(within(column('Open')).getByRole('listitem').querySelector('.comment-pill')).toBeNull()
   })
 })
 

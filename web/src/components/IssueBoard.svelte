@@ -438,6 +438,11 @@
     return column.total > limit ? `${base}, over its limit of ${limit}` : `${base}, limit ${limit}`
   }
 
+  function commentLabel(count: number | undefined): string {
+    const value = count ?? 0
+    return `${value} ${value === 1 ? 'comment' : 'comments'}`
+  }
+
   function cardCount(count: number): string {
     return `${count} ${count === 1 ? 'card' : 'cards'}`
   }
@@ -641,21 +646,21 @@
                     {#each extraLabels as label (label)}
                       <span class="meta label" style:--label-color={hashColor(label)}>{label}</span>
                     {/each}
-                    {#if issue.comment_count}
-                      <span class="meta comments" title="Comments">
-                        <MessageSquareIcon size={11} strokeWidth={2} aria-hidden="true" />
-                        <span aria-hidden="true">{issue.comment_count}</span>
-                        <span class="kit-sr-only"
-                          >{issue.comment_count}
-                          {issue.comment_count === 1 ? 'comment' : 'comments'}</span
-                        >
-                      </span>
-                    {/if}
                     {#if issue.owner}
                       <span class="meta owner"
                         ><span class="kit-sr-only">Owner</span>{issue.owner}</span
                       >
                     {/if}
+                    <span
+                      class="comment-pill"
+                      class:has-comments={(issue.comment_count ?? 0) > 0}
+                      class:alone={!issue.owner}
+                      title={commentLabel(issue.comment_count)}
+                    >
+                      <MessageSquareIcon size={12} strokeWidth={2} aria-hidden="true" />
+                      <span aria-hidden="true">{issue.comment_count ?? 0}</span>
+                      <span class="kit-sr-only">{commentLabel(issue.comment_count)}</span>
+                    </span>
                   </div>
                 {/if}
                 {#if canMove}
@@ -1122,6 +1127,32 @@
     /* Pull the hue toward the text color so every palette entry clears 4.5:1. */
     color: color-mix(in srgb, var(--label-color) 55%, var(--text-primary));
     line-height: 16px;
+  }
+
+  /* Comment count: a pill at the right of the detail row. Zero is quiet;
+     a discussed card gets a tinted, bolder pill. */
+  .comment-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: 0 7px;
+    border: 1px solid var(--border-default);
+    border-radius: 999px;
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+    font-variant-numeric: tabular-nums;
+    line-height: 18px;
+  }
+
+  .comment-pill.alone {
+    margin-inline-start: auto;
+  }
+
+  .comment-pill.has-comments {
+    border-color: color-mix(in srgb, var(--accent-blue) 40%, var(--border-default));
+    background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
+    color: color-mix(in srgb, var(--accent-blue) 75%, var(--text-primary));
+    font-weight: var(--font-weight-semibold);
   }
 
   .meta.owner {

@@ -111,8 +111,9 @@ labels:
 
 Cards are ordered by priority. Among cards of the same priority, the one with
 the most comments comes first, then the most recently updated, so busy issues
-rise to the top. Comfortable cards show a comment count when an issue has
-comments.
+rise to the top. Each comfortable card shows a comment-count pill at the right
+of its detail row: an outlined `0` when nobody has commented, and a tinted pill
+once there are comments.
 
 The board updates live as people and agents change issues. A card that someone
 else moves or adds flashes purple for a moment; your own moves flash blue. Turn
