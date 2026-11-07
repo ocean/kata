@@ -651,16 +651,17 @@
                         ><span class="kit-sr-only">Owner</span>{issue.owner}</span
                       >
                     {/if}
-                    <span
-                      class="comment-pill"
-                      class:has-comments={(issue.comment_count ?? 0) > 0}
-                      class:alone={!issue.owner}
-                      title={commentLabel(issue.comment_count)}
-                    >
-                      <MessageSquareIcon size={12} strokeWidth={2} aria-hidden="true" />
-                      <span aria-hidden="true">{issue.comment_count ?? 0}</span>
-                      <span class="kit-sr-only">{commentLabel(issue.comment_count)}</span>
-                    </span>
+                    {#if issue.comment_count}
+                      <span
+                        class="comment-pill"
+                        class:alone={!issue.owner}
+                        title={commentLabel(issue.comment_count)}
+                      >
+                        <MessageSquareIcon size={12} strokeWidth={2} aria-hidden="true" />
+                        <span aria-hidden="true">{issue.comment_count}</span>
+                        <span class="kit-sr-only">{commentLabel(issue.comment_count)}</span>
+                      </span>
+                    {/if}
                   </div>
                 {/if}
                 {#if canMove}
@@ -1129,30 +1130,25 @@
     line-height: 16px;
   }
 
-  /* Comment count: a pill at the right of the detail row. Zero is quiet;
-     a discussed card gets a tinted, bolder pill. */
+  /* Comment count: a tinted pill at the right of the detail row, shown only
+     when an issue has comments. */
   .comment-pill {
     display: inline-flex;
     align-items: center;
     gap: var(--space-1);
     padding: 0 7px;
-    border: 1px solid var(--border-default);
+    border: 1px solid color-mix(in srgb, var(--accent-blue) 40%, var(--border-default));
     border-radius: 999px;
-    color: var(--text-muted);
+    background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
+    color: color-mix(in srgb, var(--accent-blue) 75%, var(--text-primary));
     font-size: var(--font-size-xs);
     font-variant-numeric: tabular-nums;
+    font-weight: var(--font-weight-semibold);
     line-height: 18px;
   }
 
   .comment-pill.alone {
     margin-inline-start: auto;
-  }
-
-  .comment-pill.has-comments {
-    border-color: color-mix(in srgb, var(--accent-blue) 40%, var(--border-default));
-    background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
-    color: color-mix(in srgb, var(--accent-blue) 75%, var(--text-primary));
-    font-weight: var(--font-weight-semibold);
   }
 
   .meta.owner {
