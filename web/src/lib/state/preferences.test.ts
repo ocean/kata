@@ -59,11 +59,19 @@ describe('origin-local preferences', () => {
     })
   })
 
-  it('starts with comfortable cards and every board column open', () => {
+  it('starts with comfortable cards, every board column open, and remote highlights on', () => {
     expect(loadPreferences(new MapStorage())).toMatchObject({
       boardCompact: false,
       collapsedBoardColumns: [],
+      boardHighlightRemote: true,
     })
+  })
+
+  it('remembers turning remote-change highlights off', () => {
+    const storage = new MapStorage()
+    savePreferences({ ...defaultPreferences, boardHighlightRemote: false }, storage)
+
+    expect(loadPreferences(storage).boardHighlightRemote).toBe(false)
   })
 
   it('ignores malformed board settings', () => {

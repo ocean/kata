@@ -20,7 +20,9 @@ All notable changes to kata, grouped by release. Versioned releases start with
   empty columns to narrow strips, and see every project's columns together on
   the all-projects board. Add cards straight into a column, set per-column card
   limits that turn the count amber when exceeded, and undo a move from the
-  banner or with Ctrl+Z. See
+  banner or with Ctrl+Z. The board updates live: cards that others move or add
+  flash (you can turn this off), cards show their comment count, and the most
+  discussed card leads among cards of the same priority. See
   [Work on a board](guide/web-ui.md#work-on-a-board).
 - Give coding agents a shorter kata contract. The text that hooks inject,
   `kata init --with-agents` writes, and the MCP `workflow` guide serves now

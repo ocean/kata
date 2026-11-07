@@ -78,6 +78,8 @@ export interface KataTaskSummary extends KataCreationAttributionWire {
   open_blocked_by?: KataOpenBlocker[] | undefined
   related?: KataLinkPeer[] | undefined
   child_counts?: { open: number; total: number } | undefined
+  /** Comments on the issue; snapshot collection issues only. */
+  comment_count?: number | undefined
   recurrence_id?: number | undefined
   occurrence_key?: string | undefined
   created_at: string

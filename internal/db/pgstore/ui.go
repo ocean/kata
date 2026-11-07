@@ -708,6 +708,9 @@ func readUIIssues(ctx context.Context, tx *sql.Tx, query db.UISnapshotQuery,
 	if err := readUILabelsForIssues(ctx, tx, issues); err != nil {
 		return nil, nil, err
 	}
+	if err := readUICommentCounts(ctx, tx, issues); err != nil {
+		return nil, nil, err
+	}
 	return issues, closedTotal, nil
 }
 
@@ -737,6 +740,35 @@ func readUILabelsForIssues(ctx context.Context, tx *sql.Tx, issues []db.UIIssue)
 		idx, ok := indexByID[issueID]
 		if ok {
 			issues[idx].Labels = append(issues[idx].Labels, label)
+		}
+	}
+	return mapSQLError(rows.Err(), nil)
+}
+
+// readUICommentCounts fills each collection issue's comment count.
+func readUICommentCounts(ctx context.Context, tx *sql.Tx, issues []db.UIIssue) error {
+	if len(issues) == 0 {
+		return nil
+	}
+	indexByID := make(map[int64]int, len(issues))
+	issueIDs := make([]int64, len(issues))
+	for idx := range issues {
+		issueIDs[idx] = issues[idx].ID
+		indexByID[issues[idx].ID] = idx
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT issue_id, COUNT(*) FROM comments
+		WHERE issue_id = ANY($1::bigint[]) GROUP BY issue_id`, issueIDs)
+	if err != nil {
+		return fmt.Errorf("read UI comment counts: %w", mapSQLError(err, nil))
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var issueID, count int64
+		if err := rows.Scan(&issueID, &count); err != nil {
+			return fmt.Errorf("scan UI comment counts: %w", mapSQLError(err, nil))
+		}
+		if idx, ok := indexByID[issueID]; ok {
+			issues[idx].CommentCount = count
 		}
 	}
 	return mapSQLError(rows.Err(), nil)

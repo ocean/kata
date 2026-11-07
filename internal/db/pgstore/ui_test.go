@@ -192,6 +192,12 @@ func TestUISnapshotClosedPageContract(t *testing.T) {
 	})
 }
 
+func TestUISnapshotCommentCountContract(t *testing.T) {
+	dbtest.RunUISnapshotCommentCountContract(t, func(t *testing.T) db.Storage {
+		return openUIStore(t)
+	})
+}
+
 func TestUISnapshotChildLinkContract(t *testing.T) {
 	dbtest.RunUISnapshotChildLinkContract(t, func(t *testing.T) db.Storage {
 		return openUIStore(t)

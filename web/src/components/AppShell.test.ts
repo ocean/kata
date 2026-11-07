@@ -197,6 +197,29 @@ describe('AppShell', () => {
       )
     })
 
+    test("turns highlights for other people's changes off from the board toolbar", async () => {
+      const onPreferencesChange = vi.fn()
+      render(AppShell, {
+        props: {
+          route: { kind: 'kata', projectUID, graph: false, board: true, filters },
+          snapshot: snapshot(),
+          loading: false,
+          ...mutationProps(),
+          onNavigate: vi.fn(),
+          onCreateProject: vi.fn(async () => ({ changed: true })),
+          onPreferencesChange,
+        },
+      })
+
+      const toggle = screen.getByRole('button', { name: 'Highlight changes by others' })
+      expect(toggle.getAttribute('aria-pressed')).toBe('true')
+      await fireEvent.click(toggle)
+
+      expect(onPreferencesChange).toHaveBeenCalledWith(
+        expect.objectContaining({ boardHighlightRemote: false }),
+      )
+    })
+
     test('remembers a collapsed Done column', async () => {
       const onPreferencesChange = vi.fn()
       render(AppShell, {
@@ -1677,6 +1700,7 @@ describe('AppShell', () => {
           collapsedGroups: [],
           boardCompact: false,
           collapsedBoardColumns: [],
+          boardHighlightRemote: true,
         },
         onPreferencesChange,
         ...mutationProps(),

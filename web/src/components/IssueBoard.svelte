@@ -16,6 +16,7 @@
   import FoldHorizontalIcon from '@lucide/svelte/icons/fold-horizontal'
   import UnfoldHorizontalIcon from '@lucide/svelte/icons/unfold-horizontal'
   import EllipsisIcon from '@lucide/svelte/icons/ellipsis'
+  import MessageSquareIcon from '@lucide/svelte/icons/message-square'
   import ListTreeIcon from '@lucide/svelte/icons/list-tree'
   import OctagonAlertIcon from '@lucide/svelte/icons/octagon-alert'
   import PlusIcon from '@lucide/svelte/icons/plus'
@@ -62,6 +63,10 @@
     limits?: Readonly<Record<string, number>> | undefined
     /** Creates an issue in a column: with that column's label, or none for Open. */
     onAddCard?: ((title: string, label: string | undefined) => Promise<boolean>) | undefined
+    /** Flash cards that someone else moved or added while the board is open. */
+    highlightRemoteChanges?: boolean | undefined
+    /** Identifies what the board shows (project, filters); a change resets remote tracking. */
+    scopeKey?: string | undefined
   }
 
   let {
@@ -81,6 +86,8 @@
     onToggleColumn = undefined,
     limits = {},
     onAddCard = undefined,
+    highlightRemoteChanges = true,
+    scopeKey = '',
   }: Props = $props()
 
   const uid = $props.id()
@@ -89,6 +96,51 @@
   // Cards that just landed, highlighted briefly so the eye can find them.
   const justMoved = new SvelteSet<string>()
   const highlightMs = 1200
+  // Cards that changed because someone else moved or added them.
+  const remoteChanged = new SvelteSet<string>()
+  const remoteHighlightMs = 2400
+  // Cards this viewer is moving or just added; their refreshes are not remote.
+  const ownChanges = new SvelteSet<string>()
+  const ownTitles = new SvelteSet<string>()
+  let seenColumns: Map<string, BoardColumnID> | null = null
+  let seenKey = ''
+
+  $effect(() => {
+    const key = `${scopeKey}\u0000${columns.join('\u0000')}`
+    const current = new Map(issues.map((issue) => [issue.uid, columnFor(issue, columns)]))
+    const previous = seenColumns
+    seenColumns = current
+    // A new scope, filter, or column set is a new view, not a change to flag.
+    if (previous === null || key !== seenKey) {
+      seenKey = key
+      return
+    }
+    if (!highlightRemoteChanges) return
+    for (const issue of issues) {
+      if (ownChanges.has(issue.uid)) continue
+      const before = previous.get(issue.uid)
+      const changed =
+        before === undefined
+          ? // Older closed cards arrive with the next page of Done; only new open cards count.
+            issue.status === 'open' && !ownTitles.has(issue.title)
+          : before !== current.get(issue.uid)
+      if (changed) flashRemote(issue.uid)
+    }
+  })
+
+  function flashRemote(uid: string): void {
+    remoteChanged.add(uid)
+    setTimeout(() => remoteChanged.delete(uid), remoteHighlightMs)
+  }
+
+  function markOwnChange(uid: string): void {
+    ownChanges.add(uid)
+  }
+
+  function releaseOwnChange(uid: string): void {
+    // A refresh can land just after the save returns, so keep it ours a little longer.
+    setTimeout(() => ownChanges.delete(uid), highlightMs)
+  }
   const undoMs = 10_000
   let lastMove: { uid: string; from: BoardColumnID; flash: number } | null = null
   onDestroy(() => {
@@ -136,6 +188,7 @@
       return
     }
     const from = currentColumn(issue)
+    markOwnChange(issue.uid)
     pending.set(issue.uid, target)
     announcement = `Moving ${issue.title} to ${columnTitle(target)}…`
     let moved = false
@@ -143,6 +196,7 @@
       moved = await onMoveIssue(issue, plan)
     } finally {
       pending.delete(issue.uid)
+      releaseOwnChange(issue.uid)
     }
     if (!moved) {
       announcement = `Could not move ${issue.title}. It is back in its column.`
@@ -202,6 +256,7 @@
   async function complete(request: KataTaskCloseRequest): Promise<boolean> {
     const issue = completing
     if (!issue) return false
+    markOwnChange(issue.uid)
     pending.set(issue.uid, 'done')
     completing = null
     announcement = `Completing ${issue.title}…`
@@ -210,6 +265,7 @@
       closed = await onCompleteIssue(issue, request)
     } finally {
       pending.delete(issue.uid)
+      releaseOwnChange(issue.uid)
     }
     announcement = closed ? `Completed ${issue.title}.` : `Could not complete ${issue.title}.`
     return closed
@@ -343,6 +399,9 @@
     const title = addDraft.trim()
     if (!title || addSaving || !onAddCard) return
     addSaving = true
+    // The new card arrives in a refresh before its ID is known, so match its title.
+    ownTitles.add(title)
+    setTimeout(() => ownTitles.delete(title), 10_000)
     try {
       if (await onAddCard(title, column.label)) {
         // Stay open so several cards can be added in a row.
@@ -501,6 +560,7 @@
                 class:closed={issue.status === 'closed'}
                 class:child={depth > 0}
                 class:just-moved={justMoved.has(issue.uid)}
+                class:remote-change={remoteChanged.has(issue.uid)}
                 class:compact
                 data-depth={depth}
                 style:--depth={Math.min(depth, 3)}
@@ -581,6 +641,16 @@
                     {#each extraLabels as label (label)}
                       <span class="meta label" style:--label-color={hashColor(label)}>{label}</span>
                     {/each}
+                    {#if issue.comment_count}
+                      <span class="meta comments" title="Comments">
+                        <MessageSquareIcon size={11} strokeWidth={2} aria-hidden="true" />
+                        <span aria-hidden="true">{issue.comment_count}</span>
+                        <span class="kit-sr-only"
+                          >{issue.comment_count}
+                          {issue.comment_count === 1 ? 'comment' : 'comments'}</span
+                        >
+                      </span>
+                    {/if}
                     {#if issue.owner}
                       <span class="meta owner"
                         ><span class="kit-sr-only">Owner</span>{issue.owner}</span
@@ -1118,6 +1188,19 @@
     animation: card-landed 700ms cubic-bezier(0.25, 0.1, 0.25, 1);
   }
 
+  /* Someone else moved or added this card: a longer, purple-tinted flash. */
+  .card.remote-change {
+    animation: card-remote 1600ms cubic-bezier(0.25, 0.1, 0.25, 1);
+  }
+
+  @keyframes card-remote {
+    0%,
+    35% {
+      background: color-mix(in srgb, var(--accent-purple) 18%, var(--bg-surface));
+      border-color: color-mix(in srgb, var(--accent-purple) 55%, var(--border-default));
+    }
+  }
+
   @keyframes card-landed {
     from {
       background: color-mix(in srgb, var(--accent-blue) 22%, var(--bg-surface));
@@ -1213,6 +1296,11 @@
     .card.just-moved {
       animation: none;
       background: color-mix(in srgb, var(--accent-blue) 12%, var(--bg-surface));
+    }
+
+    .card.remote-change {
+      animation: none;
+      background: color-mix(in srgb, var(--accent-purple) 10%, var(--bg-surface));
     }
 
     .board-column,

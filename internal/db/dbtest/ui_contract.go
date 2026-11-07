@@ -1242,3 +1242,51 @@ func RunUISnapshotClosedPageContract(t *testing.T, open func(*testing.T) db.Stor
 		require.Equal(t, 0, *data.ClosedTotal)
 	})
 }
+
+// RunUISnapshotCommentCountContract checks that collection issues carry the
+// number of comments on each issue.
+func RunUISnapshotCommentCountContract(t *testing.T, open func(*testing.T) db.Storage) {
+	t.Helper()
+	store := open(t)
+	uiStore, ok := store.(db.UIStore)
+	require.True(t, ok, "storage backend must implement db.UIStore")
+	ctx := t.Context()
+	project := createCursorProject(ctx, t, store)
+	busy := createCursorIssue(ctx, t, store, project.ID, "Busy issue")
+	quiet := createCursorIssue(ctx, t, store, project.ID, "Quiet issue")
+	closed := createCursorIssue(ctx, t, store, project.ID, "Closed issue")
+	for _, comment := range []struct {
+		issue db.Issue
+		body  string
+	}{
+		{busy, "First comment"}, {busy, "Second comment"}, {busy, "Third comment"},
+		{closed, "Closing note"},
+	} {
+		_, _, err := store.CreateComment(ctx, db.CreateCommentParams{
+			IssueID: comment.issue.ID, Author: "user-a", Body: comment.body,
+		})
+		require.NoError(t, err)
+	}
+	_, _, changed, err := store.CloseIssue(ctx, closed.ID, "done", "user-a", "Completed", nil)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	counts := func(query db.UISnapshotQuery) map[string]int64 {
+		t.Helper()
+		data, err := uiStore.ReadUISnapshot(ctx, query)
+		require.NoError(t, err)
+		result := map[string]int64{}
+		for _, issue := range data.Issues {
+			result[issue.UID] = issue.CommentCount
+		}
+		return result
+	}
+
+	require.Equal(t, map[string]int64{busy.UID: 3, quiet.UID: 0, closed.UID: 1}, counts(db.UISnapshotQuery{
+		View: "all-open", ProjectUID: project.UID, Statuses: []string{"all"},
+	}))
+	// The paged closed read carries counts too.
+	require.Equal(t, map[string]int64{busy.UID: 3, quiet.UID: 0, closed.UID: 1}, counts(db.UISnapshotQuery{
+		View: "all-open", ProjectUID: project.UID, Statuses: []string{"all"}, ClosedLimit: 5,
+	}))
+}

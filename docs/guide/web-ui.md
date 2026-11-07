@@ -109,6 +109,16 @@ labels:
 | A label column | Open issues carrying that label; an issue with several column labels sits in the first | Adds the label, removes other column labels, and reopens a closed issue |
 | Done | Closed issues, newest first; the daemon sends 30 at a time and **Show more** loads the next 30 | Opens the **Complete task** form, which asks for a reason, note, and evidence before closing |
 
+Cards are ordered by priority. Among cards of the same priority, the one with
+the most comments comes first, then the most recently updated, so busy issues
+rise to the top. Comfortable cards show a comment count when an issue has
+comments.
+
+The board updates live as people and agents change issues. A card that someone
+else moves or adds flashes purple for a moment; your own moves flash blue. Turn
+the purple highlight off or on with the **Highlight changes by others** button
+(the sparkles icon beside the filters); the browser remembers the choice.
+
 An issue with subtasks is an epic: its card carries an **Epic** badge, and
 subtasks in the same column are listed directly under it, indented one step per
 level. A subtask whose epic sits in another column shows that epic's ID beside

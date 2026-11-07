@@ -7077,6 +7077,7 @@ type UIIssue struct {
 	Body                string               `json:"body" validate:"required"`
 	ClosedAt            *time.Time           `json:"closed_at,omitempty"`
 	ClosedReason        *string              `json:"closed_reason,omitempty"`
+	CommentCount        *int64               `json:"comment_count,omitempty"`
 	CreatedAt           time.Time            `json:"created_at" validate:"required"`
 	DeadlineOnDate      *string              `json:"deadline_on_date,omitempty"`
 	DeletedAt           *time.Time           `json:"deleted_at,omitempty"`

@@ -289,3 +289,38 @@ describe('boardColumnLimitsFromMetadata', () => {
     expect(boardColumnLimitsFromMetadata({ board_column_limits: null })).toEqual({})
   })
 })
+
+describe('hot cards', () => {
+  it('floats the most-commented card to the top among cards of the same priority', () => {
+    const board = buildBoard(
+      [
+        issue('quiet-new', { priority: 1, comment_count: 0, updated_at: '2026-06-01T00:00:00Z' }),
+        issue('busy', { priority: 1, comment_count: 7, updated_at: '2026-01-01T00:00:00Z' }),
+        issue('some', { priority: 1, comment_count: 2, updated_at: '2026-02-01T00:00:00Z' }),
+        issue('urgent-quiet', { priority: 0 }),
+        issue('low-busy', { priority: 3, comment_count: 40 }),
+      ],
+      [],
+    )
+
+    expect(board.columns[0]!.issues.map((i) => i.uid)).toEqual([
+      'urgent-quiet',
+      'busy',
+      'some',
+      'quiet-new',
+      'low-busy',
+    ])
+  })
+
+  it('falls back to most recently updated when comment counts tie', () => {
+    const board = buildBoard(
+      [
+        issue('older', { priority: 2, comment_count: 3, updated_at: '2026-01-01T00:00:00Z' }),
+        issue('newer', { priority: 2, comment_count: 3, updated_at: '2026-05-01T00:00:00Z' }),
+      ],
+      [],
+    )
+
+    expect(board.columns[0]!.issues.map((i) => i.uid)).toEqual(['newer', 'older'])
+  })
+})

@@ -10,6 +10,8 @@ export interface Preferences {
   boardCompact: boolean
   /** Board column IDs (such as `done` or `label:review`) shown as narrow strips. */
   collapsedBoardColumns: string[]
+  /** Flash board cards that someone else moved or added. */
+  boardHighlightRemote: boolean
 }
 
 export const defaultPreferences: Preferences = {
@@ -20,6 +22,7 @@ export const defaultPreferences: Preferences = {
   collapsedGroups: [],
   boardCompact: false,
   collapsedBoardColumns: [],
+  boardHighlightRemote: true,
 }
 
 export function loadPreferences(storage: Storage = localStorage): Preferences {
@@ -38,6 +41,7 @@ export function loadPreferences(storage: Storage = localStorage): Preferences {
       collapsedGroups: stringArray(value.collapsedGroups, []),
       boardCompact: value.boardCompact === true,
       collapsedBoardColumns: stringArray(value.collapsedBoardColumns, []),
+      boardHighlightRemote: value.boardHighlightRemote !== false,
     }
   } catch {
     return cloneDefaults()
@@ -68,6 +72,7 @@ export function savePreferences(
     collapsedGroups: stringArray(current.collapsedGroups, []),
     boardCompact: current.boardCompact === true,
     collapsedBoardColumns: stringArray(current.collapsedBoardColumns, []),
+    boardHighlightRemote: current.boardHighlightRemote !== false,
   }
   storage.setItem(preferencesStorageKey, JSON.stringify(allowed))
 }

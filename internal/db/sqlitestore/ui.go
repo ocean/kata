@@ -766,6 +766,9 @@ func readUIIssues(
 	if err := readUILabelsForIssues(ctx, tx, issues); err != nil {
 		return nil, nil, err
 	}
+	if err := readUICommentCounts(ctx, tx, issues); err != nil {
+		return nil, nil, err
+	}
 	return issues, closedTotal, nil
 }
 
@@ -808,6 +811,46 @@ func readUILabelsForIssues(ctx context.Context, tx *sql.Tx, issues []db.UIIssue)
 		}
 		if err := rows.Close(); err != nil {
 			return fmt.Errorf("close UI label batch: %w", err)
+		}
+	}
+	return nil
+}
+
+// readUICommentCounts fills each collection issue's comment count in batches.
+func readUICommentCounts(ctx context.Context, tx *sql.Tx, issues []db.UIIssue) error {
+	indexByID := make(map[int64]int, len(issues))
+	for idx := range issues {
+		indexByID[issues[idx].ID] = idx
+	}
+	for start := 0; start < len(issues); start += uiLabelBatchSize {
+		end := min(start+uiLabelBatchSize, len(issues))
+		args := make([]any, 0, end-start)
+		for idx := start; idx < end; idx++ {
+			args = append(args, issues[idx].ID)
+		}
+		// #nosec G202 -- the dynamic fragment contains only count-derived ? placeholders; values stay bound.
+		statement := `SELECT issue_id, COUNT(*) FROM comments WHERE issue_id IN (` +
+			uiSQLitePlaceholders(end-start) + `) GROUP BY issue_id`
+		rows, err := tx.QueryContext(ctx, statement, args...)
+		if err != nil {
+			return fmt.Errorf("read UI comment counts: %w", err)
+		}
+		for rows.Next() {
+			var issueID, count int64
+			if err := rows.Scan(&issueID, &count); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("scan UI comment counts: %w", err)
+			}
+			if idx, ok := indexByID[issueID]; ok {
+				issues[idx].CommentCount = count
+			}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("iterate UI comment counts: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close UI comment counts: %w", err)
 		}
 	}
 	return nil

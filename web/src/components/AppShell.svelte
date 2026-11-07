@@ -11,6 +11,7 @@
   } from '@kenn-io/kit-ui'
   import KanbanIcon from '@lucide/svelte/icons/square-kanban'
   import Rows2Icon from '@lucide/svelte/icons/rows-2'
+  import SparklesIcon from '@lucide/svelte/icons/sparkles'
   import Rows4Icon from '@lucide/svelte/icons/rows-4'
   import ListIcon from '@lucide/svelte/icons/list'
   import Columns3Icon from '@lucide/svelte/icons/columns-3'
@@ -957,6 +958,20 @@
           {/if}
         {/snippet}
       </SegmentedControl>
+      <IconButton
+        ariaLabel="Highlight changes by others"
+        ariaPressed={preferences.boardHighlightRemote}
+        title={preferences.boardHighlightRemote
+          ? 'Highlighting cards others move or add (click to turn off)'
+          : 'Not highlighting cards others move or add (click to turn on)'}
+        onclick={() =>
+          onPreferencesChange({
+            ...preferences,
+            boardHighlightRemote: !preferences.boardHighlightRemote,
+          })}
+      >
+        <SparklesIcon size={15} strokeWidth={1.8} aria-hidden="true" />
+      </IconButton>
       <span class="board-columns-action">
         {#if columnsEditBlockedReason}
           <Tooltip text={columnsEditBlockedReason} align="end">
@@ -992,6 +1007,8 @@
       onShowMoreDone={onShowMoreBoardDone}
       compact={preferences.boardCompact}
       limits={boardLimits}
+      highlightRemoteChanges={preferences.boardHighlightRemote}
+      scopeKey={`${selectedProject?.uid ?? 'all'}|${JSON.stringify(route.filters)}`}
       onAddCard={selectedProject &&
       onCreateBoardIssue &&
       !readOnly &&

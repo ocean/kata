@@ -6735,6 +6735,9 @@ components:
           type: string
         closed_reason:
           type: string
+        comment_count:
+          format: int64
+          type: integer
         created_at:
           format: date-time
           type: string

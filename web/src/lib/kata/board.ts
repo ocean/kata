@@ -19,6 +19,7 @@ export interface BoardIssue {
   closed_at?: string | undefined
   parent?: { uid: string } | undefined
   child_counts?: { open: number; total: number } | undefined
+  comment_count?: number | undefined
 }
 
 export interface BoardColumn<T extends BoardIssue> {
@@ -226,10 +227,14 @@ export function planBoardMove(
   return plan
 }
 
+// Priority first; among equal priorities the most-discussed ("hot") card
+// leads, then the most recently updated.
 function byPriorityThenUpdated(a: BoardIssue, b: BoardIssue): number {
   const pa = a.priority ?? Number.POSITIVE_INFINITY
   const pb = b.priority ?? Number.POSITIVE_INFINITY
   if (pa !== pb) return pa - pb
+  const comments = (b.comment_count ?? 0) - (a.comment_count ?? 0)
+  if (comments !== 0) return comments
   return b.updated_at.localeCompare(a.updated_at)
 }
 

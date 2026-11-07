@@ -66,6 +66,8 @@ type UIIssue struct {
 	Labels          []string `json:"labels"`
 	ScheduledOnDate string   `json:"scheduled_on_date,omitempty"`
 	DeadlineOnDate  string   `json:"deadline_on_date,omitempty"`
+	// CommentCount is filled for snapshot collection issues only.
+	CommentCount int64 `json:"comment_count,omitempty"`
 }
 
 // MatchUICalendarView evaluates date-sensitive browser collection predicates

@@ -657,3 +657,134 @@ describe('IssueBoard add card during a refresh', () => {
     expect(input.value).toBe('Half typed')
   })
 })
+
+describe('IssueBoard comment badge', () => {
+  afterEach(() => cleanup())
+
+  it('shows how many comments a comfortable card has', () => {
+    renderBoard({ issues: [{ ...triage, comment_count: 3 }, doing] })
+
+    const card = within(column('Open')).getByRole('listitem')
+    expect(within(card).getByText('3')).toBeTruthy()
+    expect(
+      screen.getByRole('button', { name: 'Triage inbox', description: /3 comments/ }),
+    ).toBeTruthy()
+    expect(
+      within(within(column('in-progress')).getByRole('listitem')).queryByText(/comment/),
+    ).toBeNull()
+  })
+
+  it('uses the singular for one comment and leaves compact cards without a badge', () => {
+    renderBoard({ issues: [{ ...triage, comment_count: 1 }] })
+    expect(
+      screen.getByRole('button', { name: 'Triage inbox', description: /1 comment$/ }),
+    ).toBeTruthy()
+    cleanup()
+
+    renderBoard({ issues: [{ ...triage, comment_count: 5 }], compact: true })
+    expect(within(column('Open')).getByRole('listitem').textContent).not.toContain('5')
+  })
+})
+
+describe('IssueBoard remote changes', () => {
+  afterEach(() => {
+    cleanup()
+    dismissFlash()
+  })
+
+  function setup(props: Partial<Props> = {}) {
+    const base: Props = {
+      issues: [triage, doing, shipped],
+      columns: ['in-progress', 'review'],
+      selectedIssueUID: null,
+      showProject: false,
+      scopeKey: 'project-example',
+      onOpenIssue: vi.fn(),
+      onMoveIssue: vi.fn(async () => true),
+      onCompleteIssue: vi.fn(async () => true),
+      ...props,
+    }
+    return render(IssueBoard, { props: base })
+  }
+
+  const cardOf = (title: string) => cardButton(title).closest('li')!
+
+  it('flashes a card someone else moved, and a card someone else added', async () => {
+    const view = setup()
+    expect(cardOf('Triage inbox').classList).not.toContain('remote-change')
+
+    const added = task({ id: 50, uid: 'u-added', title: 'Added by an agent', labels: ['review'] })
+    await view.rerender({
+      issues: [{ ...triage, labels: ['review'] }, doing, shipped, added],
+    })
+
+    expect(within(column('review')).getByRole('button', { name: 'Triage inbox' })).toBeTruthy()
+    expect(cardOf('Triage inbox').classList).toContain('remote-change')
+    expect(cardOf('Added by an agent').classList).toContain('remote-change')
+    expect(cardOf('Write the parser').classList).not.toContain('remote-change')
+  })
+
+  it('flashes nothing when the highlight is turned off', async () => {
+    const view = setup({ highlightRemoteChanges: false })
+
+    await view.rerender({ issues: [{ ...triage, labels: ['review'] }, doing, shipped] })
+
+    expect(cardOf('Triage inbox').classList).not.toContain('remote-change')
+  })
+
+  it('does not flash a card the viewer moved', async () => {
+    const view = setup()
+    const onMoveIssue = vi.fn(async () => {
+      await view.rerender({ issues: [{ ...triage, labels: ['in-progress'] }, doing, shipped] })
+      return true
+    })
+    await view.rerender({ onMoveIssue })
+
+    await fireEvent.keyDown(cardButton('Triage inbox'), { key: 'ArrowRight', altKey: true })
+
+    await waitFor(() => expect(cardOf('Triage inbox').classList).toContain('just-moved'))
+    expect(cardOf('Triage inbox').classList).not.toContain('remote-change')
+  })
+
+  it('does not flash a card the viewer added from a column', async () => {
+    const view = setup()
+    const onAddCard = vi.fn(async (title: string) => {
+      const mine = task({ id: 80, uid: 'u-mine', title, labels: ['review'] })
+      await view.rerender({ issues: [triage, doing, shipped, mine] })
+      return true
+    })
+    await view.rerender({ onAddCard })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Add card to review' }))
+    const input = screen.getByRole('textbox', { name: 'New card in review' })
+    await fireEvent.input(input, { target: { value: 'My own card' } })
+    await fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => expect(onAddCard).toHaveBeenCalled())
+    expect(cardOf('My own card').classList).not.toContain('remote-change')
+  })
+
+  it('does not flash when the board switches to another project or filter', async () => {
+    const view = setup()
+    const other = task({ id: 60, uid: 'u-other', title: 'Other project card' })
+
+    await view.rerender({ scopeKey: 'project-other', issues: [other] })
+
+    expect(cardOf('Other project card').classList).not.toContain('remote-change')
+  })
+
+  it('does not flash older closed cards that arrive with the next page of Done', async () => {
+    const view = setup()
+    const older = task({
+      id: 70,
+      uid: 'u-older',
+      title: 'Closed long ago',
+      status: 'closed',
+      closed_at: '2026-01-01T00:00:00Z',
+    })
+
+    await view.rerender({ issues: [triage, doing, shipped, older] })
+
+    expect(cardOf('Closed long ago').classList).not.toContain('remote-change')
+  })
+})
