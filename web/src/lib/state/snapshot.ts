@@ -237,9 +237,13 @@ export function snapshotIntentForRoute(
     }
   }
   const resolvedView = route.view ?? (route.projectUID || route.issueUID ? 'all-open' : 'inbox')
-  // Inbox and Scheduled are assembled in the browser from every open issue, so
-  // they share the all-open collection instead of server-side view filters.
-  const view = resolvedView === 'inbox' || resolvedView === 'scheduled' ? 'all-open' : resolvedView
+  // Inbox, Scheduled, and Needs attention are assembled in the browser from
+  // every open issue, so they share the all-open collection instead of
+  // server-side view filters.
+  const view =
+    resolvedView === 'inbox' || resolvedView === 'scheduled' || resolvedView === 'attention'
+      ? 'all-open'
+      : resolvedView
   const intent: UISnapshotIntent = {
     view,
     statuses: [...route.filters.status],

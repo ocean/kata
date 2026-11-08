@@ -157,6 +157,7 @@ describe('snapshotIntentForRoute', () => {
       'https://daemon.example/kata',
       'https://daemon.example/kata?view=inbox',
       'https://daemon.example/kata?view=scheduled',
+      'https://daemon.example/kata?view=attention',
     ]) {
       const route = parseRoute(new URL(url))
       if (route.kind === 'route-error') throw new Error('expected a Kata route')

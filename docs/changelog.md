@@ -1,7 +1,7 @@
 ---
 title: Changelog
 description: Release history for kata
-last_edited: 2026-11-05
+last_edited: 2026-11-08
 ---
 
 All notable changes to kata, grouped by release. Versioned releases start with
@@ -9,6 +9,11 @@ All notable changes to kata, grouped by release. Versioned releases start with
 
 ## Unreleased
 
+- See which tasks are waiting on you in the Web UI. The new **Needs attention**
+  view collects open tasks an agent marked `stuck` or `needs-human`, tasks with
+  `kata notify` requests, and tasks labelled `needs-review`, grouped by urgency.
+  Rows in every list carry a badge with the reason. See
+  [Navigate projects and collections](guide/web-ui.md#navigate-projects-and-collections).
 - Give coding agents a shorter kata contract. The text that hooks inject,
   `kata init --with-agents` writes, and the MCP `workflow` guide serves now
   covers one agent's loop in plain prose: skip kata for questions, search with

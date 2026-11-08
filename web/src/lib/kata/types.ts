@@ -1,6 +1,13 @@
 import type { KataCommentLink, KataCreationAttributionWire, KataReplyKind } from '@kenn-io/kata-ui'
 
-export type KataTaskViewName = 'inbox' | 'today' | 'delegated' | 'scheduled' | 'all' | 'logbook'
+export type KataTaskViewName =
+  | 'inbox'
+  | 'today'
+  | 'delegated'
+  | 'scheduled'
+  | 'attention'
+  | 'all'
+  | 'logbook'
 
 export interface KataTaskChecklistItem {
   id: string

@@ -1,7 +1,7 @@
 ---
 title: Web UI
 description: Browse and manage Kata projects and issues in the daemon-served browser application.
-last_edited: 2026-11-04
+last_edited: 2026-11-08
 ---
 
 # Web UI
@@ -48,8 +48,8 @@ the standalone `kata ui` command keeps its existing route.
 
 ## Navigate projects and collections
 
-The sidebar lists **Inbox**, **Today**, **Delegated**, and **Scheduled**, then
-individual projects:
+The sidebar lists **Inbox**, **Needs attention**, **Today**, **Delegated**, and
+**Scheduled**, then individual projects:
 
 - **Inbox** shows open tasks from every project. A task with a future
   `scheduled_on` stays out of Inbox until that day; a deadline never hides it.
@@ -61,6 +61,22 @@ individual projects:
   which reads
   [attention requests](../reference/cli.md#teammate-requests) for an actor or
   teammate.
+- **Needs attention** shows open tasks that someone is waiting on a human
+  for, grouped by urgency:
+  - **Stuck**: an agent set `work.attention` to `stuck`.
+  - **Needs a human**: an agent set `work.attention` to `needs-human`.
+  - **Requests**: a `kata notify` request, to anyone, including the
+    reached-date requests the daemon raises for owners.
+  - **Needs review**: the task carries the `needs-review` label, which the
+    default agent contract asks agents to add when they stop before the work is
+    done.
+
+  A task appears once, in its most urgent group, and each group keeps its own
+  sort. Rows that need attention also carry a small badge in every list; its
+  tooltip and the row's screen-reader text give the reasons, including the
+  agent's `work.attention_msg` and each request's sender and message. See
+  [Orchestration conventions](../reference/metadata.md#orchestration-conventions-work-keys)
+  and [Teammate requests](../reference/metadata.md#teammate-requests-notify-keys).
 - **Today** shows tasks whose start date or deadline has arrived.
 - **Delegated** groups open teammate work by its `author/teammate` attribution.
 - **Scheduled** is the agenda of every open task with a start date or deadline:
