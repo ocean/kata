@@ -15,20 +15,20 @@ All notable changes to kata, grouped by release. Versioned releases start with
   Rows in every list carry a badge with the reason. See
   [Navigate projects and collections](guide/web-ui.md#navigate-projects-and-collections).
 - See a project as a board in the Web UI. Switch the header to **Board** to
-  lay cards out in Open, label columns you choose, and Done; drag a card, use
-  its **Move to…** menu, or press **Alt+←**/**Alt+→** to move it, and select it
-  to read the whole issue in a drawer. Moving a card swaps its column label,
-  and dropping it on Done asks for the usual completion note and evidence.
-  Epics show an **Epic** badge with their subtasks listed underneath, and Done
-  loads closed issues 30 at a time from the daemon, so projects with long
-  histories open quickly. Switch to compact one-line cards, collapse Done or
-  empty columns to narrow strips, and see every project's columns together on
-  the all-projects board. Add cards straight into a column, set per-column card
-  limits that turn the count amber when exceeded, and undo a move from the
-  banner or with Ctrl+Z. The board updates live: cards that others move or add
-  flash (you can turn this off), cards show their comment count, and the most
-  discussed card leads among cards of the same priority. See
-  [Work on a board](guide/web-ui.md#work-on-a-board).
+  lay cards out in four columns that follow what Kata already records: Open,
+  In progress (claimed), Needs attention (waiting on a human or on another
+  issue), and Done. Drag a card, use its **Move to…** menu, or press
+  **Alt+←**/**Alt+→**, and the board performs the matching action: claim,
+  release, flag for attention with a short reason, clear attention, reopen, or
+  close through the usual completion form. Select a card to read the whole
+  issue in a drawer. Epics show an **Epic** badge with their subtasks listed
+  underneath, and Done loads closed issues 30 at a time from the daemon, so
+  projects with long histories open quickly. Switch to compact one-line cards,
+  collapse Done or empty columns to narrow strips, add cards to Open, and undo
+  a claim or release from the banner or with Ctrl+Z. The board updates live:
+  cards that others move or add flash (you can turn this off), cards show their
+  comment count, and the most discussed card leads among cards of the same
+  priority. See [Work on a board](guide/web-ui.md#work-on-a-board).
 - Give coding agents a shorter kata contract. The text that hooks inject,
   `kata init --with-agents` writes, and the MCP `workflow` guide serves now
   covers one agent's loop in plain prose: skip kata for questions, search with

@@ -6,12 +6,7 @@
 
   import { commentRetryIdentity } from './lib/kata/commentRetry'
   import type { KataCommentReplyIntent, KataTaskSummary } from './lib/kata/types'
-  import {
-    boardColumnLimitsMetadataKey,
-    boardColumnsMetadataKey,
-    defaultDoneLimit,
-    type BoardMovePlan,
-  } from './lib/kata/board'
+  import { defaultDoneLimit, type BoardMovePlan } from './lib/kata/board'
   import AppShell from './components/AppShell.svelte'
   import KataDaemonSwitcher from './components/KataDaemonSwitcher.svelte'
   import LaunchHint from './components/LaunchHint.svelte'
@@ -849,36 +844,60 @@
   }
 
   // Board cards act on any issue in the collection, not only the selected one.
-  async function moveBoardIssue(issue: KataTaskSummary, plan: BoardMovePlan): Promise<boolean> {
+  // Board cards act on any issue in the collection, not only the selected one.
+  // A move reopens first, so later writes act on an open issue, then changes
+  // attention, then takes or releases ownership.
+  async function moveBoardIssue(
+    issue: KataTaskSummary,
+    plan: BoardMovePlan,
+    reason?: string,
+  ): Promise<boolean> {
     const target = { projectId: issue.project_id, ref: issue.uid }
-    // Add first, then remove, then reopen, so a failed step never strands the
-    // card in Open with no column label.
-    if (plan.addLabel !== undefined) {
-      const label = plan.addLabel
-      const added = await runMutation({ draft: label }, (context) =>
-        addLabelRequest(
-          { projectId: String(target.projectId), ref: target.ref },
-          context.body({ label }, requestActor),
-        ),
+    const identityPolicy = authority?.snapshot?.capabilities.actor_policy === 'identity'
+    const patch = (metadata: Record<string, string | null>) =>
+      runMutation({ draft: metadata }, (context) =>
+        patchIssueMetadata(target, context.body({ patch: metadata }, requestActor), {
+          headers: context.headers,
+        }),
       )
-      if (!added) return false
-    }
-    for (const label of plan.removeLabels) {
-      const removed = await runMutation({ draft: label }, () =>
-        removeLabelRequest(
-          { ...target, label },
-          authority?.snapshot?.capabilities.actor_policy === 'identity'
-            ? undefined
-            : { actor: requestActor },
-        ),
-      )
-      if (!removed) return false
-    }
     if (plan.reopen) {
       const reopened = await runMutation({}, (context) =>
         reopenIssueRequest(target, context.body({}, requestActor)),
       )
       if (!reopened) return false
+    }
+    if (plan.clearAttention) {
+      if (Object.keys(plan.clearAttention.metadata).length > 0) {
+        if (!(await patch(plan.clearAttention.metadata))) return false
+      }
+      for (const label of plan.clearAttention.removeLabels) {
+        const removed = await runMutation({ draft: label }, () =>
+          removeLabelRequest(
+            { ...target, label },
+            identityPolicy ? undefined : { actor: requestActor },
+          ),
+        )
+        if (!removed) return false
+      }
+    }
+    if (plan.flagAttention) {
+      const flagged = await patch({
+        'work.attention': 'needs-human',
+        'work.attention_msg': reason ?? null,
+      })
+      if (!flagged) return false
+    }
+    if (plan.claim) {
+      const claimed = await runMutation({}, (context) =>
+        claimIssueRequest(target, context.body({}, requestActor), { headers: context.headers }),
+      )
+      if (!claimed) return false
+    }
+    if (plan.release) {
+      const released = await runMutation({}, (context) =>
+        unassignIssue(target, context.body({}, requestActor)),
+      )
+      if (!released) return false
     }
     return true
   }
@@ -896,15 +915,10 @@
     )
   }
 
-  // A card added from a board column: created in that project, carrying the
-  // column's label so it lands in the column it was added to.
+  // A card added from the board's Open column, created in that project.
   let pendingBoardCreate: { identity: string; key: string } | undefined
-  async function createBoardIssue(
-    projectID: number,
-    title: string,
-    label: string | undefined,
-  ): Promise<boolean> {
-    const identity = JSON.stringify([projectID, title, label ?? null])
+  async function createBoardIssue(projectID: number, title: string): Promise<boolean> {
+    const identity = JSON.stringify([projectID, title])
     const create =
       pendingBoardCreate?.identity === identity
         ? pendingBoardCreate
@@ -915,7 +929,7 @@
       (context) =>
         createIssueRequest(
           { projectId: String(projectID) },
-          context.body({ title, ...(label ? { labels: [label] } : {}) }, requestActor),
+          context.body({ title }, requestActor),
           { headers: { 'Idempotency-Key': create.key, 'X-Kata-Surface': 'web' } },
         ),
     )
@@ -930,30 +944,6 @@
 
   function serializeFilters(value: AppRoute): string {
     return JSON.stringify(value.filters)
-  }
-
-  async function saveBoardColumns(
-    projectUID: string | undefined,
-    columns: string[],
-    limits: Record<string, number>,
-  ): Promise<boolean> {
-    // Only project boards have their own columns; the all-projects board
-    // shows the union of them.
-    if (projectUID === undefined) return false
-    const project = authority?.snapshot?.catalog
-      ?.map(({ project }) => project)
-      .find((candidate) => candidate.uid === projectUID)
-    if (!project) return false
-    return runMutation({ draft: columns, revision: `"rev-${project.revision}"` }, (context) =>
-      patchProjectMetadata(
-        { projectId: project.id },
-        {
-          actor: requestActor,
-          patch: { [boardColumnsMetadataKey]: columns, [boardColumnLimitsMetadataKey]: limits },
-        },
-        { headers: context.headers },
-      ),
-    )
   }
 
   function deleteIssue(): Promise<boolean> {
@@ -1432,7 +1422,6 @@
         onDeleteRecurrence={deleteRecurrence}
         onMoveBoardIssue={moveBoardIssue}
         onCompleteBoardIssue={completeBoardIssue}
-        onSaveBoardColumns={saveBoardColumns}
         onShowMoreBoardDone={showMoreBoardDone}
         onCreateBoardIssue={createBoardIssue}
       />

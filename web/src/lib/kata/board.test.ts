@@ -1,326 +1,242 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  boardColumnsFromMetadata,
-  unionBoardColumns,
-  boardColumnLimitsFromMetadata,
+  boardColumnTitles,
   buildBoard,
-  defaultBoardColumns,
-  normalizeBoardColumns,
+  columnFor,
+  defaultDoneLimit,
+  isEpic,
   planBoardMove,
-  type BoardIssue,
 } from './board'
+import type { KataTaskSummary } from './types'
 
-function issue(uid: string, overrides: Partial<BoardIssue> = {}): BoardIssue {
+const now = new Date('2026-11-10T12:00:00Z')
+
+function issue(uid: string, overrides: Partial<KataTaskSummary> = {}): KataTaskSummary {
   return {
+    id: 1,
     uid,
+    project_id: 7,
+    project_uid: 'project-example',
+    project_name: 'example-project',
+    short_id: uid,
+    qualified_id: `example-project#${uid}`,
+    title: `Task ${uid}`,
     status: 'open',
+    metadata: {},
+    revision: 3,
+    author: 'agent-a',
     labels: [],
-    priority: undefined,
+    created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',
-    closed_at: undefined,
     ...overrides,
   }
 }
 
-describe('board column configuration', () => {
-  it('reads an ordered label list from project metadata', () => {
-    expect(boardColumnsFromMetadata({ board_columns: ['review', 'in-progress'] })).toEqual([
-      'review',
-      'in-progress',
-    ])
+describe('columnFor', () => {
+  it('puts an unclaimed open issue in Open and a closed one in Done', () => {
+    expect(columnFor(issue('a'), now)).toBe('open')
+    expect(columnFor(issue('b', { status: 'closed' }), now)).toBe('done')
   })
 
-  it('falls back to the default columns when metadata holds no usable list', () => {
-    expect(boardColumnsFromMetadata({})).toEqual(defaultBoardColumns)
-    expect(boardColumnsFromMetadata({ board_columns: 'review' })).toEqual(defaultBoardColumns)
-    expect(boardColumnsFromMetadata({ board_columns: [1, 2] })).toEqual(defaultBoardColumns)
-    expect(boardColumnsFromMetadata(undefined)).toEqual(defaultBoardColumns)
+  it('puts an owned open issue in In progress until its claim expires', () => {
+    expect(columnFor(issue('a', { owner: 'agent-a' }), now)).toBe('in-progress')
+    expect(
+      columnFor(
+        issue('b', { owner: 'agent-a', assignment_expires_on: '2026-11-10T13:00:00Z' }),
+        now,
+      ),
+    ).toBe('in-progress')
+    expect(
+      columnFor(
+        issue('c', { owner: 'agent-a', assignment_expires_on: '2026-11-10T11:00:00Z' }),
+        now,
+      ),
+    ).toBe('open')
   })
 
-  it('keeps an explicitly empty list so a board can show only Open and Done', () => {
-    expect(boardColumnsFromMetadata({ board_columns: [] })).toEqual([])
+  it('puts anything waiting on a human or on another issue in Needs attention', () => {
+    expect(
+      columnFor(issue('a', { owner: 'agent-a', metadata: { 'work.attention': 'stuck' } }), now),
+    ).toBe('attention')
+    expect(columnFor(issue('b', { labels: ['needs-review'] }), now)).toBe('attention')
+    expect(
+      columnFor(
+        issue('c', {
+          open_blocked_by: [{ uid: 'u-x', short_id: 'x', qualified_id: 'example-project#x' }],
+        }),
+        now,
+      ),
+    ).toBe('attention')
+    expect(columnFor(issue('d', { metadata: { 'work.attention': 'ok' } }), now)).toBe('open')
   })
 
-  it('trims, drops blanks and duplicates, and keeps the first position', () => {
-    expect(normalizeBoardColumns([' review ', '', 'doing', 'review', '  '])).toEqual([
-      'review',
-      'doing',
-    ])
+  it('keeps a closed issue in Done whatever signals it still carries', () => {
+    expect(
+      columnFor(issue('a', { status: 'closed', metadata: { 'work.attention': 'stuck' } }), now),
+    ).toBe('done')
   })
 })
 
 describe('buildBoard', () => {
-  it('places open issues in their first configured column label, in column order', () => {
-    const board = buildBoard(
-      [
-        issue('a', { labels: ['review', 'doing'] }),
-        issue('b', { labels: ['bug'] }),
-        issue('c', { labels: ['doing'] }),
-      ],
-      ['doing', 'review'],
-    )
-
-    expect(board.columns.map((column) => [column.id, column.issues.map((i) => i.uid)])).toEqual([
-      ['open', ['b']],
-      ['label:doing', ['a', 'c']],
-      ['label:review', []],
-      ['done', []],
+  it('always shows the four states in order', () => {
+    const board = buildBoard([], { now })
+    expect(board.columns.map((column) => [column.id, column.title])).toEqual([
+      ['open', 'Open'],
+      ['in-progress', 'In progress'],
+      ['attention', 'Needs attention'],
+      ['done', 'Done'],
     ])
+    expect(boardColumnTitles.attention).toBe('Needs attention')
   })
 
-  it('puts every closed issue in Done whatever its labels, newest close first', () => {
+  it('places each issue in the column its state derives', () => {
     const board = buildBoard(
       [
-        issue('old', { status: 'closed', labels: ['doing'], closed_at: '2026-01-01T00:00:00Z' }),
-        issue('new', { status: 'closed', closed_at: '2026-03-01T00:00:00Z' }),
+        issue('todo'),
+        issue('doing', { owner: 'agent-a' }),
+        issue('stuck', { metadata: { 'work.attention': 'stuck' } }),
+        issue('shipped', { status: 'closed' }),
       ],
-      ['doing'],
+      { now },
     )
-
-    expect(board.columns.at(-1)!.issues.map((i) => i.uid)).toEqual(['new', 'old'])
-    expect(board.columns[1]!.issues).toEqual([])
-  })
-
-  it('orders open cards by priority, unprioritized last, then most recently updated', () => {
-    const board = buildBoard(
-      [
-        issue('none-new', { updated_at: '2026-05-01T00:00:00Z' }),
-        issue('p2', { priority: 2 }),
-        issue('none-old', { updated_at: '2026-01-01T00:00:00Z' }),
-        issue('p0', { priority: 0 }),
-      ],
-      [],
-    )
-
-    expect(board.columns[0]!.issues.map((i) => i.uid)).toEqual(['p0', 'p2', 'none-new', 'none-old'])
-  })
-
-  it('caps Done and reports how many closed issues it holds in total', () => {
-    const closed = Array.from({ length: 5 }, (_, n) =>
-      issue(`c${n}`, { status: 'closed', closed_at: `2026-01-0${n + 1}T00:00:00Z` }),
-    )
-    const done = buildBoard(closed, [], { doneLimit: 2 }).columns.at(-1)!
-
-    expect(done.issues.map((i) => i.uid)).toEqual(['c4', 'c3'])
-    expect(done.total).toBe(5)
-  })
-
-  it('shows a pending move in its target column before the server confirms it', () => {
-    const board = buildBoard([issue('a'), issue('b', { labels: ['doing'] })], ['doing'], {
-      pending: new Map([
-        ['a', 'label:doing'],
-        ['b', 'done'],
-      ]),
-    })
-
     expect(board.columns.map((column) => column.issues.map((i) => i.uid))).toEqual([
-      [],
-      ['a'],
-      ['b'],
+      ['todo'],
+      ['doing'],
+      ['stuck'],
+      ['shipped'],
     ])
+  })
+
+  it('orders open cards by priority, then comment count, then most recent update', () => {
+    const board = buildBoard(
+      [
+        issue('quiet-new', { priority: 1, comment_count: 0, updated_at: '2026-06-01T00:00:00Z' }),
+        issue('busy', { priority: 1, comment_count: 7 }),
+        issue('urgent', { priority: 0 }),
+        issue('none', {}),
+      ],
+      { now },
+    )
+    expect(board.columns[0]!.issues.map((i) => i.uid)).toEqual([
+      'urgent',
+      'busy',
+      'quiet-new',
+      'none',
+    ])
+  })
+
+  it('lists subtasks under their parent within a column', () => {
+    const board = buildBoard(
+      [
+        issue('child', { parent: { uid: 'epic', short_id: 'epic' } }),
+        issue('epic', { child_counts: { open: 1, total: 1 } }),
+      ],
+      { now },
+    )
+    expect(board.columns[0]!.issues.map((i) => i.uid)).toEqual(['epic', 'child'])
+    expect(board.columns[0]!.depths.get('child')).toBe(1)
+    expect(isEpic(board.columns[0]!.issues[0]!)).toBe(true)
+  })
+
+  it('pages Done locally or reports the server total', () => {
+    const closed = Array.from({ length: defaultDoneLimit + 5 }, (_, n) =>
+      issue(`c${n}`, {
+        status: 'closed',
+        closed_at: `2026-01-01T00:${String(n).padStart(2, '0')}:00Z`,
+      }),
+    )
+    expect(buildBoard(closed, { now }).columns[3]!.issues).toHaveLength(defaultDoneLimit)
+    const paged = buildBoard(closed, { now, doneTotal: 90 }).columns[3]!
+    expect(paged.issues).toHaveLength(defaultDoneLimit + 5)
+    expect(paged.total).toBe(90)
+  })
+
+  it('shows a pending move in its target column', () => {
+    const board = buildBoard([issue('a')], { now, pending: new Map([['a', 'in-progress']]) })
+    expect(board.columns[1]!.issues.map((i) => i.uid)).toEqual(['a'])
   })
 })
 
 describe('planBoardMove', () => {
-  const columns = ['doing', 'review']
-
-  it('adds the target label before removing the column labels the issue had', () => {
-    expect(
-      planBoardMove(issue('a', { labels: ['bug', 'doing'] }), 'label:review', columns),
-    ).toEqual({ addLabel: 'review', removeLabels: ['doing'], reopen: false, close: false })
+  it('claims an unowned card moved to In progress, and releases it moved back to Open', () => {
+    expect(planBoardMove(issue('a'), 'in-progress', now)).toEqual({ claim: true })
+    expect(planBoardMove(issue('a', { owner: 'agent-a' }), 'open', now)).toEqual({ release: true })
   })
 
-  it('removes every column label when a card moves back to Open', () => {
-    expect(planBoardMove(issue('a', { labels: ['review', 'doing'] }), 'open', columns)).toEqual({
-      removeLabels: ['review', 'doing'],
-      reopen: false,
-      close: false,
+  it('asks for a reason before flagging a card for attention', () => {
+    expect(planBoardMove(issue('a', { owner: 'agent-a' }), 'attention', now)).toEqual({
+      flagAttention: true,
     })
   })
 
-  it('closes without touching labels when a card moves to Done', () => {
-    expect(planBoardMove(issue('a', { labels: ['doing'] }), 'done', columns)).toEqual({
-      removeLabels: [],
-      reopen: false,
-      close: true,
+  it('clears every attention signal when a card leaves Needs attention', () => {
+    const waiting = issue('a', {
+      owner: 'agent-a',
+      labels: ['needs-review', 'bug'],
+      metadata: {
+        'work.attention': 'needs-human',
+        'work.attention_msg': 'Pick one',
+        'notify.Y29vcmRpbmF0b3I': { from: 'agent-a', message: 'Decide' },
+        other: 'kept',
+      },
+    })
+    expect(planBoardMove(waiting, 'in-progress', now)).toEqual({
+      clearAttention: {
+        metadata: {
+          'work.attention': 'ok',
+          'work.attention_msg': null,
+          'notify.Y29vcmRpbmF0b3I': null,
+        },
+        removeLabels: ['needs-review'],
+      },
+    })
+    expect(planBoardMove(waiting, 'open', now)).toEqual({
+      clearAttention: {
+        metadata: {
+          'work.attention': null,
+          'work.attention_msg': null,
+          'notify.Y29vcmRpbmF0b3I': null,
+        },
+        removeLabels: ['needs-review'],
+      },
+      release: true,
     })
   })
 
-  it('reopens a closed card and gives it the target column label', () => {
-    expect(
-      planBoardMove(issue('a', { status: 'closed', labels: ['doing'] }), 'label:review', columns),
-    ).toEqual({ addLabel: 'review', removeLabels: ['doing'], reopen: true, close: false })
+  it('claims an unowned card that leaves Needs attention for In progress', () => {
+    expect(planBoardMove(issue('a', { labels: ['needs-review'] }), 'in-progress', now)).toEqual({
+      clearAttention: { metadata: {}, removeLabels: ['needs-review'] },
+      claim: true,
+    })
   })
 
-  it('returns undefined when the card already sits in the target column', () => {
-    expect(planBoardMove(issue('a', { labels: ['doing'] }), 'label:doing', columns)).toBeUndefined()
-    expect(planBoardMove(issue('a', { status: 'closed' }), 'done', columns)).toBeUndefined()
-    expect(planBoardMove(issue('a', { labels: ['bug'] }), 'open', columns)).toBeUndefined()
+  it('refuses to move a card that is only blocked by another open issue', () => {
+    const blocked = issue('a', {
+      open_blocked_by: [{ uid: 'u-x', short_id: 'x', qualified_id: 'example-project#x' }],
+    })
+    expect(planBoardMove(blocked, 'open', now)).toEqual({ blockedBy: ['x'] })
+    expect(planBoardMove(blocked, 'in-progress', now)).toEqual({ blockedBy: ['x'] })
+    expect(planBoardMove(blocked, 'done', now)).toEqual({ close: true })
   })
 
-  it('keeps an extra column label off the plan when the card moves to its own first column', () => {
-    // A card labelled doing+review sits in doing; moving it to review must drop doing.
-    expect(
-      planBoardMove(issue('a', { labels: ['doing', 'review'] }), 'label:review', columns),
-    ).toEqual({ removeLabels: ['doing'], reopen: false, close: false })
-  })
-})
-
-describe('subtasks on the board', () => {
-  const child = (uid: string, parent: string, overrides: Partial<BoardIssue> = {}) =>
-    issue(uid, { parent: { uid: parent }, ...overrides })
-
-  it('lists children directly under their parent in the same column, by priority', () => {
-    const board = buildBoard(
-      [
-        issue('solo', { priority: 1 }),
-        child('epic-b', 'epic', { priority: 3 }),
-        issue('epic', { priority: 2, child_counts: { open: 2, total: 2 } }),
-        child('epic-a', 'epic', { priority: 0 }),
-        issue('late', { priority: 4 }),
-      ],
-      [],
-    )
-    const open = board.columns[0]!
-
-    expect(open.issues.map((i) => i.uid)).toEqual(['solo', 'epic', 'epic-a', 'epic-b', 'late'])
-    expect([...open.depths.entries()]).toEqual([
-      ['solo', 0],
-      ['epic', 0],
-      ['epic-a', 1],
-      ['epic-b', 1],
-      ['late', 0],
-    ])
+  it('closes through the completion form and reopens into the target state', () => {
+    expect(planBoardMove(issue('a', { owner: 'agent-a' }), 'done', now)).toEqual({ close: true })
+    const closed = issue('b', { status: 'closed', owner: 'agent-a' })
+    expect(planBoardMove(closed, 'open', now)).toEqual({ reopen: true, release: true })
+    expect(planBoardMove(closed, 'in-progress', now)).toEqual({ reopen: true })
+    expect(planBoardMove(issue('c', { status: 'closed' }), 'in-progress', now)).toEqual({
+      reopen: true,
+      claim: true,
+    })
+    expect(planBoardMove(issue('d', { status: 'closed' }), 'attention', now)).toEqual({
+      reopen: true,
+      flagAttention: true,
+    })
   })
 
-  it('nests grandchildren one level deeper', () => {
-    const board = buildBoard([issue('root'), child('mid', 'root'), child('leaf', 'mid')], [])
-
-    expect(board.columns[0]!.issues.map((i) => i.uid)).toEqual(['root', 'mid', 'leaf'])
-    expect(board.columns[0]!.depths.get('leaf')).toBe(2)
-  })
-
-  it('keeps a child top-level when its parent sits in another column', () => {
-    const board = buildBoard(
-      [issue('epic', { labels: ['doing'] }), child('task', 'epic')],
-      ['doing'],
-    )
-
-    expect(board.columns[0]!.issues.map((i) => i.uid)).toEqual(['task'])
-    expect(board.columns[0]!.depths.get('task')).toBe(0)
-  })
-
-  it('nests closed children under a closed parent in Done', () => {
-    const board = buildBoard(
-      [
-        issue('epic', { status: 'closed', closed_at: '2026-01-01T00:00:00Z' }),
-        child('task', 'epic', { status: 'closed', closed_at: '2026-01-05T00:00:00Z' }),
-        issue('other', { status: 'closed', closed_at: '2026-01-03T00:00:00Z' }),
-      ],
-      [],
-    )
-
-    expect(board.columns.at(-1)!.issues.map((i) => i.uid)).toEqual(['other', 'epic', 'task'])
-  })
-})
-
-describe('server-paged Done', () => {
-  it('shows every closed issue it was given and reports the server total', () => {
-    const closed = Array.from({ length: 40 }, (_, n) =>
-      issue(`c${n}`, {
-        status: 'closed',
-        closed_at: `2026-01-01T00:00:${String(n).padStart(2, '0')}Z`,
-      }),
-    )
-    const done = buildBoard(closed, [], { doneTotal: 95 }).columns.at(-1)!
-
-    expect(done.issues).toHaveLength(40)
-    expect(done.total).toBe(95)
-  })
-})
-
-describe('unionBoardColumns', () => {
-  it('merges every project board in order, keeping the first position of shared labels', () => {
-    expect(
-      unionBoardColumns([
-        { board_columns: ['doing', 'review'] },
-        { board_columns: ['triage', 'review', 'blocked'] },
-      ]),
-    ).toEqual(['doing', 'review', 'triage', 'blocked'])
-  })
-
-  it('counts a project without board settings as the default columns', () => {
-    expect(unionBoardColumns([{}, { board_columns: ['review'] }])).toEqual([
-      'in-progress',
-      'review',
-    ])
-  })
-
-  it('keeps a project that chose no label columns out of the union', () => {
-    expect(unionBoardColumns([{ board_columns: [] }, { board_columns: ['review'] }])).toEqual([
-      'review',
-    ])
-  })
-
-  it('falls back to the default columns when there are no projects', () => {
-    expect(unionBoardColumns([])).toEqual(['in-progress'])
-  })
-})
-
-describe('boardColumnLimitsFromMetadata', () => {
-  it('reads whole-number limits for label columns', () => {
-    expect(
-      boardColumnLimitsFromMetadata({ board_column_limits: { review: 3, 'in-progress': 5 } }),
-    ).toEqual({ review: 3, 'in-progress': 5 })
-  })
-
-  it('drops limits that are not whole numbers from 1 to 999', () => {
-    expect(
-      boardColumnLimitsFromMetadata({
-        board_column_limits: { a: 0, b: -2, c: 2.5, d: '4', e: 1000, f: 999 },
-      }),
-    ).toEqual({ f: 999 })
-  })
-
-  it('treats missing or malformed metadata as no limits', () => {
-    expect(boardColumnLimitsFromMetadata(undefined)).toEqual({})
-    expect(boardColumnLimitsFromMetadata({ board_column_limits: [3] })).toEqual({})
-    expect(boardColumnLimitsFromMetadata({ board_column_limits: null })).toEqual({})
-  })
-})
-
-describe('hot cards', () => {
-  it('floats the most-commented card to the top among cards of the same priority', () => {
-    const board = buildBoard(
-      [
-        issue('quiet-new', { priority: 1, comment_count: 0, updated_at: '2026-06-01T00:00:00Z' }),
-        issue('busy', { priority: 1, comment_count: 7, updated_at: '2026-01-01T00:00:00Z' }),
-        issue('some', { priority: 1, comment_count: 2, updated_at: '2026-02-01T00:00:00Z' }),
-        issue('urgent-quiet', { priority: 0 }),
-        issue('low-busy', { priority: 3, comment_count: 40 }),
-      ],
-      [],
-    )
-
-    expect(board.columns[0]!.issues.map((i) => i.uid)).toEqual([
-      'urgent-quiet',
-      'busy',
-      'some',
-      'quiet-new',
-      'low-busy',
-    ])
-  })
-
-  it('falls back to most recently updated when comment counts tie', () => {
-    const board = buildBoard(
-      [
-        issue('older', { priority: 2, comment_count: 3, updated_at: '2026-01-01T00:00:00Z' }),
-        issue('newer', { priority: 2, comment_count: 3, updated_at: '2026-05-01T00:00:00Z' }),
-      ],
-      [],
-    )
-
-    expect(board.columns[0]!.issues.map((i) => i.uid)).toEqual(['newer', 'older'])
+  it('does nothing when the card is already in the target column', () => {
+    expect(planBoardMove(issue('a'), 'open', now)).toBeUndefined()
+    expect(planBoardMove(issue('b', { status: 'closed' }), 'done', now)).toBeUndefined()
   })
 })

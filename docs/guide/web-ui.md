@@ -110,20 +110,29 @@ side-by-side detail layouts.
 
 Switch the header's **List**/**Board** control to **Board** to see a project, or
 all open work across projects, as columns of cards. Each card shows its ID,
-priority, title, owner, open blocker count, subtask progress, deadline, and any
-labels that are not board columns. The layout stays in the URL as
-`layout=board`, so a board is bookmarkable. Choosing a project in the sidebar
+priority, title, owner, open blocker count, subtask progress, deadline, and its
+labels. The layout stays in the URL as `layout=board`, so a board is
+bookmarkable. Choosing a project in the sidebar
 keeps the board; choosing Inbox, Today, Delegated, or Scheduled returns to the
 list.
 
-Kata stores only open and closed, so the board builds its middle columns from
-labels:
+The board has four columns, and each one shows a state Kata already records.
+It adds no workflow vocabulary of its own, so there is nothing to configure:
 
 | Column | Holds | Moving a card here |
 | --- | --- | --- |
-| Open | Open issues with none of the board's column labels | Removes the issue's column labels |
-| A label column | Open issues carrying that label; an issue with several column labels sits in the first | Adds the label, removes other column labels, and reopens a closed issue |
+| Open | Open issues nobody has claimed, or whose claim has expired | Releases the owner |
+| In progress | Open issues with an owner whose claim has not expired | Claims the issue for you if nobody owns it |
+| Needs attention | Open issues an agent marked `stuck` or `needs-human`, issues with `kata notify` requests or the `needs-review` label, and issues blocked by another open issue | Asks **What does it need?**, then sets `work.attention` to `needs-human` with your answer as the message |
 | Done | Closed issues, newest first; the daemon sends 30 at a time and **Show more** loads the next 30 | Opens the **Complete task** form, which asks for a reason, note, and evidence before closing |
+
+A card in Needs attention shows a badge and the reason, such as **Needs you**
+with the agent's message, or **Blocked** with the issues it waits on. Moving it
+out clears what put it there: `work.attention` becomes `ok` (In progress) or is
+removed (Open), `work.attention_msg` and `notify.*` requests are removed, and
+the `needs-review` label comes off. A card that is only blocked by other issues
+does not move; the banner names the blockers, and the card leaves on its own
+when they close. Moving a card out of Done reopens it first.
 
 Cards are ordered by priority. Among cards of the same priority, the one with
 the most comments comes first, then the most recently updated, so busy issues
@@ -143,29 +152,18 @@ its own. Subtasks still move on their own.
 Move a card by dragging it, from its **Move to…** menu, or by focusing it and
 pressing **Alt+←** or **Alt+→**. Arrow keys move focus between cards and
 columns. A moved card flashes briefly where it lands, and a banner offers
-**Undo** for ten seconds; **Ctrl+Z** (**⌘Z** on macOS) undoes the last move
-too, except inside a text field. Undo is not offered for a card that moved out
-of Done, because closing it again needs the completion form. Select a card to
-open its full detail in a side drawer; on a phone the drawer fills the screen.
-**Esc**, the close button, or the browser's back gesture closes it.
+**Undo** for ten seconds when the move only claimed or released the issue;
+**Ctrl+Z** (**⌘Z** on macOS) undoes that move too, except inside a text field.
+Moves that reopen, close, flag, or clear attention have no Undo, because they
+cannot be reversed exactly. Select a card to open its full detail in a side
+drawer; on a phone the drawer fills the screen. **Esc**, the close button, or
+the browser's back gesture closes it.
 
-On a project board, **Add card** at the foot of Open and each label column
-creates an issue in that project. A card added to a label column carries that
-label, so it lands in the column. Press **Enter** to add and keep typing the
-next card, or **Esc** to close the form. The board across all projects does
-not offer **Add card**, because it has no single project to add to.
-
-**Edit board columns** (the columns icon beside the filters) adds, orders, and
-removes label columns, and sets an optional card limit for each. When a column
-holds more cards than its limit, its count shows as, for example, `9 / 8` in
-amber, and its accessible name says it is over its limit. Limits only flag the
-column; moves are never blocked. A project board saves its columns to the
-project's `board_columns` metadata and its limits to `board_column_limits`, so
-everyone who opens that project's board sees the same columns; this needs a
-credential that can change project settings. New boards start with one
-`in-progress` column. The board across all projects shows every project's label
-columns together, each label once, in project order; open a project to change
-its columns. Read-only and stale sessions show the board but do not move cards.
+On a project board, **Add card** at the foot of Open creates an issue in that
+project. Press **Enter** to add and keep typing the next card, or **Esc** to
+close the form. The board across all projects does not offer **Add card**,
+because it has no single project to add to. Read-only and stale sessions show
+the board but do not move cards.
 
 The **Card density** switch beside the filters chooses comfortable cards or
 compact cards, which show only the ID, priority, and title on one line. Done and

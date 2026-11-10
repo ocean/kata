@@ -1,32 +1,39 @@
-// Board layout: open issues sit in user-configured label columns, closed
-// issues in Done. Kata stores only open/closed, so columns between those two
-// are labels; moving a card swaps the column label the issue carries.
+// Board layout: four columns that each show a state Kata already records, so
+// the board adds no workflow vocabulary of its own.
+//
+//   Open             open, nobody has claimed it
+//   In progress      open and claimed (an owner whose claim has not expired)
+//   Needs attention  open and waiting on a human (work.attention, notify
+//                    requests, the needs-review label) or on another open issue
+//   Done             closed
+//
+// Moving a card performs the matching Kata action: claim, release, flag or
+// clear attention, reopen, or close through the completion form.
 
-export const boardColumnsMetadataKey = 'board_columns'
-export const boardColumnLimitsMetadataKey = 'board_column_limits'
-export const maxBoardColumnLimit = 999
-export const defaultBoardColumns: readonly string[] = Object.freeze(['in-progress'])
+import { attentionReasons, needsReviewLabel } from './attention'
+import type { KataTaskSummary } from './types'
+
 export const defaultDoneLimit = 30
 
-export type BoardColumnID = 'open' | 'done' | `label:${string}`
+export type BoardColumnID = 'open' | 'in-progress' | 'attention' | 'done'
 
-export interface BoardIssue {
-  uid: string
-  status: 'open' | 'closed'
-  labels?: readonly string[] | undefined
-  priority?: number | undefined
-  updated_at: string
-  closed_at?: string | undefined
-  parent?: { uid: string } | undefined
-  child_counts?: { open: number; total: number } | undefined
-  comment_count?: number | undefined
+export const boardColumnOrder: readonly BoardColumnID[] = [
+  'open',
+  'in-progress',
+  'attention',
+  'done',
+]
+
+export const boardColumnTitles: Record<BoardColumnID, string> = {
+  open: 'Open',
+  'in-progress': 'In progress',
+  attention: 'Needs attention',
+  done: 'Done',
 }
 
-export interface BoardColumn<T extends BoardIssue> {
+export interface BoardColumn<T extends KataTaskSummary> {
   id: BoardColumnID
-  kind: 'open' | 'label' | 'done'
   title: string
-  label?: string
   /** Cards in display order: each parent is followed by its children in this column. */
   issues: T[]
   /** Nesting depth of each card: 0 for top level, 1 for a child, and so on. */
@@ -35,127 +42,65 @@ export interface BoardColumn<T extends BoardIssue> {
   total: number
 }
 
-export interface Board<T extends BoardIssue> {
+export interface Board<T extends KataTaskSummary> {
   columns: BoardColumn<T>[]
 }
 
+/** What a move does. An empty plan never happens: no change returns undefined. */
 export interface BoardMovePlan {
-  addLabel?: string
-  removeLabels: string[]
-  reopen: boolean
-  close: boolean
-}
-
-export function labelColumnID(label: string): BoardColumnID {
-  return `label:${label}`
-}
-
-export function normalizeBoardColumns(values: readonly string[]): string[] {
-  const seen = new Set<string>()
-  const result: string[] = []
-  for (const value of values) {
-    const label = value.trim()
-    if (!label || seen.has(label)) continue
-    seen.add(label)
-    result.push(label)
+  /** Close through the completion form, which asks for a reason and evidence. */
+  close?: true
+  reopen?: true
+  /** Take the unowned issue as the viewer. */
+  claim?: true
+  /** Release the current owner. */
+  release?: true
+  /** Flag the issue needs-human; the board asks for a one-line reason first. */
+  flagAttention?: true
+  /** Clear the signals that put the issue in Needs attention. */
+  clearAttention?: {
+    metadata: Record<string, string | null>
+    removeLabels: string[]
   }
-  return result
+  /** The move is refused: the card waits on these open issues. */
+  blockedBy?: string[]
 }
 
-export function boardColumnsFromMetadata(metadata: Record<string, unknown> | undefined): string[] {
-  const value = metadata?.[boardColumnsMetadataKey]
-  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) {
-    return [...defaultBoardColumns]
-  }
-  return normalizeBoardColumns(value)
+export function columnFor(issue: KataTaskSummary, now: Date = new Date()): BoardColumnID {
+  if (issue.status === 'closed') return 'done'
+  if (attentionReasons(issue).length > 0 || openBlockers(issue).length > 0) return 'attention'
+  return isClaimed(issue, now) ? 'in-progress' : 'open'
 }
 
-/** Per-column card limits keyed by label: whole numbers from 1 to 999. */
-export function boardColumnLimitsFromMetadata(
-  metadata: Record<string, unknown> | undefined,
-): Record<string, number> {
-  const value = metadata?.[boardColumnLimitsMetadataKey]
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
-  const limits: Record<string, number> = {}
-  for (const [label, limit] of Object.entries(value)) {
-    if (isBoardColumnLimit(limit)) limits[label] = limit
-  }
-  return limits
-}
-
-export function isBoardColumnLimit(value: unknown): value is number {
-  return (
-    typeof value === 'number' &&
-    Number.isInteger(value) &&
-    value >= 1 &&
-    value <= maxBoardColumnLimit
-  )
-}
-
-/**
- * Columns for a board that spans projects: every project's label columns, in
- * project order, each label at its first position. An empty catalog falls back
- * to the default columns.
- */
-export function unionBoardColumns(
-  projectMetadata: readonly (Record<string, unknown> | undefined)[],
-): string[] {
-  if (projectMetadata.length === 0) return [...defaultBoardColumns]
-  return normalizeBoardColumns(
-    projectMetadata.flatMap((metadata) => boardColumnsFromMetadata(metadata)),
-  )
-}
-
-export function buildBoard<T extends BoardIssue>(
+export function buildBoard<T extends KataTaskSummary>(
   issues: readonly T[],
-  labels: readonly string[],
   options: {
+    now?: Date
     doneLimit?: number
     pending?: ReadonlyMap<string, BoardColumnID>
     /** Closed issues the server counted; Done then shows every closed issue given. */
     doneTotal?: number | undefined
   } = {},
 ): Board<T> {
-  const columnLabels = normalizeBoardColumns(labels)
-  const open: BoardColumn<T> = {
-    id: 'open',
-    kind: 'open',
-    title: 'Open',
-    issues: [],
-    depths: new Map(),
-    total: 0,
-  }
-  const labelColumns = columnLabels.map<BoardColumn<T>>((label) => ({
-    id: labelColumnID(label),
-    kind: 'label',
-    title: label,
-    label,
+  const now = options.now ?? new Date()
+  const columns = boardColumnOrder.map<BoardColumn<T>>((id) => ({
+    id,
+    title: boardColumnTitles[id],
     issues: [],
     depths: new Map(),
     total: 0,
   }))
-  const done: BoardColumn<T> = {
-    id: 'done',
-    kind: 'done',
-    title: 'Done',
-    issues: [],
-    depths: new Map(),
-    total: 0,
-  }
-  const columns = [open, ...labelColumns, done]
   const byID = new Map(columns.map((column) => [column.id, column]))
-
   for (const issue of issues) {
-    const pending = options.pending?.get(issue.uid)
-    const target = (pending && byID.get(pending)) || byID.get(columnFor(issue, columnLabels))!
+    const target = byID.get(options.pending?.get(issue.uid) ?? columnFor(issue, now))!
     target.issues.push(issue)
   }
-
   for (const column of columns) {
-    column.issues.sort(column.kind === 'done' ? byClosedDesc : byPriorityThenUpdated)
+    column.issues.sort(column.id === 'done' ? byClosedDesc : byPriorityThenUpdated)
     nestChildren(column)
     column.total = column.issues.length
   }
+  const done = byID.get('done')!
   if (options.doneTotal !== undefined) {
     done.total = Math.max(options.doneTotal, done.issues.length)
   } else {
@@ -165,14 +110,71 @@ export function buildBoard<T extends BoardIssue>(
   return { columns }
 }
 
+export function planBoardMove(
+  issue: KataTaskSummary,
+  target: BoardColumnID,
+  now: Date = new Date(),
+): BoardMovePlan | undefined {
+  const from = columnFor(issue, now)
+  if (from === target) return undefined
+  if (target === 'done') return { close: true }
+
+  const plan: BoardMovePlan = {}
+  if (from === 'done') plan.reopen = true
+
+  if (from === 'attention' && target !== 'attention') {
+    const reasons = attentionReasons(issue)
+    const blockers = openBlockers(issue)
+    // A card waiting only on another issue moves on when that issue closes.
+    if (reasons.length === 0 && blockers.length > 0) return { blockedBy: blockers }
+    plan.clearAttention = clearSignals(issue, target)
+  }
+
+  const owned = isClaimed(issue, now)
+  if (target === 'attention') plan.flagAttention = true
+  else if (target === 'in-progress' && !owned) plan.claim = true
+  else if (target === 'open' && issue.owner) plan.release = true
+  return plan
+}
+
 /** True when an issue has subtasks, which the board shows as an epic. */
-export function isEpic(issue: BoardIssue): boolean {
+export function isEpic(issue: KataTaskSummary): boolean {
   return (issue.child_counts?.total ?? 0) > 0
+}
+
+export function openBlockers(issue: KataTaskSummary): string[] {
+  return (issue.open_blocked_by ?? []).map((blocker) => blocker.short_id)
+}
+
+function isClaimed(issue: KataTaskSummary, now: Date): boolean {
+  if (!issue.owner) return false
+  const expires = issue.assignment_expires_on
+  return expires === undefined || Date.parse(expires) > now.getTime()
+}
+
+function clearSignals(
+  issue: KataTaskSummary,
+  target: BoardColumnID,
+): NonNullable<BoardMovePlan['clearAttention']> {
+  const metadata: Record<string, string | null> = {}
+  const attention = issue.metadata['work.attention']
+  if (attention === 'stuck' || attention === 'needs-human') {
+    // In progress means actively working, which the convention spells "ok".
+    metadata['work.attention'] = target === 'in-progress' ? 'ok' : null
+    metadata['work.attention_msg'] = null
+  }
+  for (const key of Object.keys(issue.metadata)) {
+    if (key.startsWith('notify.')) metadata[key] = null
+  }
+  return {
+    metadata,
+    removeLabels: (issue.labels ?? []).filter((label) => label === needsReviewLabel),
+  }
 }
 
 // Reorders an already sorted column so each card's children in the same
 // column follow it directly, keeping the sort order among siblings.
-function nestChildren<T extends BoardIssue>(column: BoardColumn<T>): void {
+function nestChildren<T extends KataTaskSummary>(column: BoardColumn<T>): void {
   const inColumn = new Set(column.issues.map((issue) => issue.uid))
   const children = new Map<string, T[]>()
   const roots: T[] = []
@@ -201,35 +203,9 @@ function nestChildren<T extends BoardIssue>(column: BoardColumn<T>): void {
   column.depths = depths
 }
 
-export function columnFor(issue: BoardIssue, labels: readonly string[]): BoardColumnID {
-  if (issue.status === 'closed') return 'done'
-  const issueLabels = new Set(issue.labels ?? [])
-  const label = labels.find((candidate) => issueLabels.has(candidate))
-  return label === undefined ? 'open' : labelColumnID(label)
-}
-
-export function planBoardMove(
-  issue: BoardIssue,
-  target: BoardColumnID,
-  labels: readonly string[],
-): BoardMovePlan | undefined {
-  if (columnFor(issue, labels) === target) return undefined
-  if (target === 'done') return { removeLabels: [], reopen: false, close: true }
-
-  const targetLabel = target === 'open' ? undefined : target.slice('label:'.length)
-  const current = issue.labels ?? []
-  const plan: BoardMovePlan = {
-    removeLabels: current.filter((label) => labels.includes(label) && label !== targetLabel),
-    reopen: issue.status === 'closed',
-    close: false,
-  }
-  if (targetLabel !== undefined && !current.includes(targetLabel)) plan.addLabel = targetLabel
-  return plan
-}
-
 // Priority first; among equal priorities the most-discussed ("hot") card
 // leads, then the most recently updated.
-function byPriorityThenUpdated(a: BoardIssue, b: BoardIssue): number {
+function byPriorityThenUpdated(a: KataTaskSummary, b: KataTaskSummary): number {
   const pa = a.priority ?? Number.POSITIVE_INFINITY
   const pb = b.priority ?? Number.POSITIVE_INFINITY
   if (pa !== pb) return pa - pb
@@ -238,6 +214,6 @@ function byPriorityThenUpdated(a: BoardIssue, b: BoardIssue): number {
   return b.updated_at.localeCompare(a.updated_at)
 }
 
-function byClosedDesc(a: BoardIssue, b: BoardIssue): number {
+function byClosedDesc(a: KataTaskSummary, b: KataTaskSummary): number {
   return (b.closed_at ?? b.updated_at).localeCompare(a.closed_at ?? a.updated_at)
 }

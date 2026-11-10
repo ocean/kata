@@ -45,7 +45,7 @@ describe('AppShell', () => {
       })
     })
 
-    test('takes the project board columns from project metadata', () => {
+    test('shows the four Kata states and leaves labels as labels', () => {
       const current = snapshot()
       current.catalog[0]!.project.metadata = { board_columns: ['review'] }
       current.collection![0]!.labels = ['review']
@@ -60,9 +60,18 @@ describe('AppShell', () => {
         },
       })
 
-      const review = screen.getByRole('region', { name: 'review, 1 card' })
-      expect(within(review).getByText('Example issue')).toBeTruthy()
-      expect(screen.getByRole('region', { name: 'Open, 0 cards' })).toBeTruthy()
+      const board = screen.getByRole('region', { name: 'Issue board' })
+      expect(
+        within(board)
+          .getAllByRole('region')
+          .map((region) => region.getAttribute('aria-label')),
+      ).toEqual([
+        'Open, 1 card',
+        'In progress, 0 cards',
+        'Needs attention, 0 cards',
+        'Done, 0 cards',
+      ])
+      expect(screen.queryByRole('button', { name: 'Edit board columns' })).toBeNull()
     })
 
     test('opens a clicked card in place on the board', async () => {
@@ -138,18 +147,26 @@ describe('AppShell', () => {
       expect(onShowMoreBoardDone).toHaveBeenCalledOnce()
     })
 
-    test('builds the all-projects board from every project column and leaves editing to projects', async () => {
+    test('uses the same four columns on the all-projects board', () => {
       const current = snapshot()
-      current.catalog[0]!.project.metadata = { board_columns: ['doing', 'review'] }
       current.catalog.push({
         project: {
           ...current.catalog[0]!.project,
           id: 8,
           uid: '01J00000000000000000000009',
           name: 'example-peer',
-          metadata: { board_columns: ['triage', 'review'] },
         },
-        stats: { Open: 0, Closed: 0, LastEventAt: '2026-08-01T12:00:00.000Z' },
+        stats: { Open: 1, Closed: 0, LastEventAt: '2026-08-01T12:00:00.000Z' },
+      })
+      current.collection!.push({
+        ...current.collection![0]!,
+        id: 2,
+        uid: '01J00000000000000000000010',
+        project_id: 8,
+        project_uid: '01J00000000000000000000009',
+        project_name: 'example-peer',
+        title: 'Peer issue',
+        owner: 'agent-a',
       })
       render(AppShell, {
         props: {
@@ -162,14 +179,12 @@ describe('AppShell', () => {
         },
       })
 
-      const board = screen.getByRole('region', { name: 'Issue board' })
       expect(
-        within(board)
-          .getAllByRole('region')
-          .map((region) => region.getAttribute('aria-label')?.split(',')[0]),
-      ).toEqual(['Open', 'doing', 'review', 'triage', 'Done'])
-      const edit = screen.getByRole('button', { name: 'Edit board columns' })
-      expect(edit.hasAttribute('disabled')).toBe(true)
+        within(screen.getByRole('region', { name: 'In progress, 1 card' })).getByText('Peer issue'),
+      ).toBeTruthy()
+      expect(
+        within(screen.getByRole('region', { name: 'Open, 1 card' })).getByText('Example issue'),
+      ).toBeTruthy()
     })
 
     test('switches cards to compact from the density control and remembers it', async () => {
@@ -241,14 +256,12 @@ describe('AppShell', () => {
       )
     })
 
-    test('adds a card from a project board column with that column label', async () => {
-      const current = snapshot()
-      current.catalog[0]!.project.metadata = { board_columns: ['review'] }
+    test('adds a card to the project from the Open column', async () => {
       const onCreateBoardIssue = vi.fn(async () => true)
       render(AppShell, {
         props: {
           route: { kind: 'kata', projectUID, graph: false, board: true, filters },
-          snapshot: current,
+          snapshot: snapshot(),
           loading: false,
           ...mutationProps(),
           onNavigate: vi.fn(),
@@ -257,12 +270,12 @@ describe('AppShell', () => {
         },
       })
 
-      await fireEvent.click(screen.getByRole('button', { name: 'Add card to review' }))
-      const input = screen.getByRole('textbox', { name: 'New card in review' })
+      await fireEvent.click(screen.getByRole('button', { name: 'Add card to Open' }))
+      const input = screen.getByRole('textbox', { name: 'New card in Open' })
       await fireEvent.input(input, { target: { value: 'Draft the announcement' } })
       await fireEvent.keyDown(input, { key: 'Enter' })
 
-      expect(onCreateBoardIssue).toHaveBeenCalledWith(7, 'Draft the announcement', 'review')
+      expect(onCreateBoardIssue).toHaveBeenCalledWith(7, 'Draft the announcement')
     })
 
     test('offers no add-card on the all-projects board or without write access', () => {
@@ -295,35 +308,6 @@ describe('AppShell', () => {
         },
       })
       expect(screen.queryByRole('button', { name: /^Add card/ })).toBeNull()
-    })
-
-    test('reads column limits from project metadata and saves edited limits with the columns', async () => {
-      const current = snapshot()
-      current.catalog[0]!.project.metadata = {
-        board_columns: ['review'],
-        board_column_limits: { review: 2 },
-      }
-      const onSaveBoardColumns = vi.fn(async () => true)
-      render(AppShell, {
-        props: {
-          route: { kind: 'kata', projectUID, graph: false, board: true, filters },
-          snapshot: current,
-          loading: false,
-          ...mutationProps(),
-          onNavigate: vi.fn(),
-          onCreateProject: vi.fn(async () => ({ changed: true })),
-          onSaveBoardColumns,
-        },
-      })
-
-      expect(screen.getByRole('region', { name: 'review, 0 cards, limit 2' })).toBeTruthy()
-      await fireEvent.click(screen.getByRole('button', { name: 'Edit board columns' }))
-      await fireEvent.input(screen.getByRole('spinbutton', { name: 'Card limit for review' }), {
-        target: { value: '4' },
-      })
-      await fireEvent.click(screen.getByRole('button', { name: 'Save columns' }))
-
-      expect(onSaveBoardColumns).toHaveBeenCalledWith(projectUID, ['review'], { review: 4 })
     })
 
     test('keeps the board when another project is chosen in the sidebar', async () => {

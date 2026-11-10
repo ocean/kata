@@ -14,7 +14,6 @@
   import SparklesIcon from '@lucide/svelte/icons/sparkles'
   import Rows4Icon from '@lucide/svelte/icons/rows-4'
   import ListIcon from '@lucide/svelte/icons/list'
-  import Columns3Icon from '@lucide/svelte/icons/columns-3'
   import LayoutPanelLeftIcon from '@lucide/svelte/icons/layout-panel-left'
   import LayoutPanelTopIcon from '@lucide/svelte/icons/layout-panel-top'
   import MonitorIcon from '@lucide/svelte/icons/monitor'
@@ -31,13 +30,7 @@
     defaultKataTaskSearchFilters,
     projectKataWorkspaceView,
   } from '../lib/kata/authority'
-  import {
-    boardColumnLimitsFromMetadata,
-    boardColumnsFromMetadata,
-    unionBoardColumns,
-    type BoardColumnID,
-    type BoardMovePlan,
-  } from '../lib/kata/board'
+  import { type BoardColumnID, type BoardMovePlan } from '../lib/kata/board'
   import { createKataLinkFilters } from '../lib/kata/linkFilters'
   import { normalizeKataUISnapshot } from '../lib/kata/projection'
   import type {
@@ -53,7 +46,6 @@
   import type { UISnapshot } from '../lib/state/snapshot'
   import { defaultPreferences, type Preferences } from '../lib/state/preferences'
   import AccessManagement from './AccessManagement.svelte'
-  import BoardColumnsEditor from './BoardColumnsEditor.svelte'
   import IssueBoard from './IssueBoard.svelte'
   import type { MutationContext, MutationResult } from '../lib/mutations/controller'
   import CredentialAudit from './CredentialAudit.svelte'
@@ -139,23 +131,13 @@
     ) => Promise<void>
     onDeleteRecurrence: (recurrence: import('../lib/kata/types').KataRecurrence) => Promise<boolean>
     onMoveBoardIssue?:
-      | ((issue: KataTaskSummary, plan: BoardMovePlan) => Promise<boolean>)
+      | ((issue: KataTaskSummary, plan: BoardMovePlan, reason?: string) => Promise<boolean>)
       | undefined
     onCompleteBoardIssue?:
       | ((issue: KataTaskSummary, request: KataTaskCloseRequest) => Promise<boolean>)
       | undefined
-    /** Saves a project board's columns and their limits to that project's metadata. */
-    onSaveBoardColumns?:
-      | ((
-          projectUID: string | undefined,
-          columns: string[],
-          limits: Record<string, number>,
-        ) => Promise<boolean>)
-      | undefined
-    /** Creates an issue in a project, with a board column's label when it has one. */
-    onCreateBoardIssue?:
-      | ((projectID: number, title: string, label: string | undefined) => Promise<boolean>)
-      | undefined
+    /** Creates an issue in a project from the board's Open column. */
+    onCreateBoardIssue?: ((projectID: number, title: string) => Promise<boolean>) | undefined
     /** Loads the next page of the board's closed issues from the server. */
     onShowMoreBoardDone?: (() => void) | undefined
   }
@@ -211,7 +193,6 @@
     onDeleteRecurrence,
     onMoveBoardIssue = async () => false,
     onCompleteBoardIssue = async () => false,
-    onSaveBoardColumns = async () => false,
     onShowMoreBoardDone = undefined,
     onCreateBoardIssue = undefined,
   }: Props = $props()
@@ -326,27 +307,11 @@
       : undefined
   })
   let boardRoute = $derived(route.board === true && !credentialRoute)
-  // A project board uses its own columns; the all-projects board shows the
-  // union of every project's columns.
-  let boardColumns = $derived(
-    selectedProject
-      ? boardColumnsFromMetadata(selectedProject.metadata)
-      : unionBoardColumns(projection.projects.map((project) => project.metadata)),
-  )
-
-  // Limits belong to a project board; the all-projects board shows none.
-  let boardLimits = $derived(
-    selectedProject ? boardColumnLimitsFromMetadata(selectedProject.metadata) : {},
-  )
   let boardIssues = $derived(
     selectedProject
       ? projection.issues.filter((issue) => issue.project_uid === selectedProject!.uid)
       : projection.issues,
   )
-  let boardLabelSuggestions = $derived(
-    [...new Set(projection.issues.flatMap((issue) => issue.labels ?? []))].sort(),
-  )
-  let columnsEditorOpen = $state(false)
   let selectedCommentUID = $state<string | undefined>()
   let returnComment = $state<{ issueUID: string; commentUID: string } | undefined>()
   let selectedIssueUID = $derived(route.issueUID ?? null)
@@ -384,13 +349,6 @@
   let projectCreationBlockedReason = $derived(
     writeBlockedReason ??
       (scopedAuthority ? 'This credential cannot create projects.' : pendingReason),
-  )
-
-  let columnsEditBlockedReason = $derived(
-    selectedProject
-      ? (writeBlockedReason ??
-          (scopedAuthority ? 'This credential cannot change project settings.' : pendingReason))
-      : 'This board combines every project’s columns. Open a project to edit its columns.',
   )
 
   function toggleBoardColumn(columnID: BoardColumnID): void {
@@ -973,29 +931,9 @@
       >
         <SparklesIcon size={15} strokeWidth={1.8} aria-hidden="true" />
       </IconButton>
-      <span class="board-columns-action">
-        {#if columnsEditBlockedReason}
-          <Tooltip text={columnsEditBlockedReason} align="end">
-            <IconButton ariaLabel="Edit board columns" disabled>
-              <Columns3Icon size={15} strokeWidth={1.8} aria-hidden="true" />
-            </IconButton>
-          </Tooltip>
-        {:else}
-          <IconButton
-            ariaLabel="Edit board columns"
-            title="Edit board columns"
-            onclick={() => {
-              columnsEditorOpen = true
-            }}
-          >
-            <Columns3Icon size={15} strokeWidth={1.8} aria-hidden="true" />
-          </IconButton>
-        {/if}
-      </span>
     </div>
     <IssueBoard
       issues={boardIssues}
-      columns={boardColumns}
       {selectedIssueUID}
       showProject={!selectedProject}
       {loading}
@@ -1007,7 +945,6 @@
       doneTotal={snapshot.closed_total}
       onShowMoreDone={onShowMoreBoardDone}
       compact={preferences.boardCompact}
-      limits={boardLimits}
       highlightRemoteChanges={preferences.boardHighlightRemote}
       scopeKey={`${selectedProject?.uid ?? 'all'}|${JSON.stringify(route.filters)}`}
       onAddCard={selectedProject &&
@@ -1015,23 +952,12 @@
       !readOnly &&
       snapshot.capabilities.writable &&
       !scopedAuthority
-        ? (title, label) => onCreateBoardIssue(selectedProject!.id, title, label)
+        ? (title) => onCreateBoardIssue(selectedProject!.id, title)
         : undefined}
       collapsedColumns={preferences.collapsedBoardColumns}
       onToggleColumn={toggleBoardColumn}
     />
   </div>
-  <BoardColumnsEditor
-    open={columnsEditorOpen}
-    columns={boardColumns}
-    suggestions={boardLabelSuggestions}
-    savedWhere={`Saved to ${selectedProject?.name ?? 'this project'} for everyone who opens its board.`}
-    limits={boardLimits}
-    onSave={(columns, limits) => onSaveBoardColumns(selectedProject?.uid, columns, limits)}
-    onClose={() => {
-      columnsEditorOpen = false
-    }}
-  />
 {/snippet}
 
 {#snippet detailPane()}
@@ -1272,10 +1198,6 @@
 
   .board-toolbar :global(.kata-search-panel) {
     border-bottom: 0;
-  }
-
-  .board-columns-action {
-    flex: 0 0 auto;
   }
 
   .layout-segment {

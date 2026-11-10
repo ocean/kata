@@ -27,19 +27,20 @@
     buildBoard,
     columnFor,
     defaultDoneLimit,
+    openBlockers,
     isEpic,
     planBoardMove,
     type BoardColumn,
     type BoardColumnID,
     type BoardMovePlan,
   } from '../lib/kata/board'
+  import { attentionBadgeLabels, attentionReasons, needsReviewLabel } from '../lib/kata/attention'
   import type { KataTaskCloseRequest, KataTaskSummary } from '../lib/kata/types'
   import CompleteIssueDialog from './CompleteIssueDialog.svelte'
+  import Modal from './Modal.svelte'
 
   interface Props {
     issues: readonly KataTaskSummary[]
-    /** Ordered labels between Open and Done. */
-    columns: readonly string[]
     selectedIssueUID: string | null
     /** Show each card's project, for boards that span projects. */
     showProject: boolean
@@ -47,7 +48,8 @@
     /** Set when cards cannot move; the board shows it and stays read-only. */
     moveBlockedReason?: string | undefined
     onOpenIssue: (issue: KataTaskSummary) => void
-    onMoveIssue: (issue: KataTaskSummary, plan: BoardMovePlan) => Promise<boolean>
+    /** Performs a move; `reason` is the one-line note given when flagging for attention. */
+    onMoveIssue: (issue: KataTaskSummary, plan: BoardMovePlan, reason?: string) => Promise<boolean>
     onCompleteIssue: (issue: KataTaskSummary, request: KataTaskCloseRequest) => Promise<boolean>
     /** Closed issues the server counted; set when Done is paged on the server. */
     doneTotal?: number | undefined
@@ -59,10 +61,8 @@
     collapsedColumns?: readonly string[] | undefined
     /** Collapses or expands a column; collapse is offered for Done and empty columns. */
     onToggleColumn?: ((columnID: BoardColumnID) => void) | undefined
-    /** Card limits for label columns, keyed by label. */
-    limits?: Readonly<Record<string, number>> | undefined
-    /** Creates an issue in a column: with that column's label, or none for Open. */
-    onAddCard?: ((title: string, label: string | undefined) => Promise<boolean>) | undefined
+    /** Creates an issue from the Open column. */
+    onAddCard?: ((title: string) => Promise<boolean>) | undefined
     /** Flash cards that someone else moved or added while the board is open. */
     highlightRemoteChanges?: boolean | undefined
     /** Identifies what the board shows (project, filters); a change resets remote tracking. */
@@ -71,7 +71,6 @@
 
   let {
     issues,
-    columns,
     selectedIssueUID,
     showProject,
     loading = false,
@@ -84,7 +83,6 @@
     compact = false,
     collapsedColumns = [],
     onToggleColumn = undefined,
-    limits = {},
     onAddCard = undefined,
     highlightRemoteChanges = true,
     scopeKey = '',
@@ -106,11 +104,11 @@
   let seenKey = ''
 
   $effect(() => {
-    const key = `${scopeKey}\u0000${columns.join('\u0000')}`
-    const current = new Map(issues.map((issue) => [issue.uid, columnFor(issue, columns)]))
+    const key = scopeKey
+    const current = new Map(issues.map((issue) => [issue.uid, columnFor(issue)]))
     const previous = seenColumns
     seenColumns = current
-    // A new scope, filter, or column set is a new view, not a change to flag.
+    // A new scope or filter is a new view, not a change to flag.
     if (previous === null || key !== seenKey) {
       seenKey = key
       return
@@ -160,13 +158,12 @@
   let canMove = $derived(moveBlockedReason === undefined)
   let serverPaged = $derived(doneTotal !== undefined && onShowMoreDone !== undefined)
   let board = $derived(
-    buildBoard(issues, columns, {
+    buildBoard(issues, {
       doneLimit,
       pending,
       doneTotal: serverPaged ? doneTotal : undefined,
     }),
   )
-  let columnLabels = $derived(new Set(columns))
   let collapsedSet = $derived(new Set(collapsedColumns))
   let issuesByUID = $derived(new Map(issues.map((issue) => [issue.uid, issue])))
   const today = new Date().toISOString().slice(0, 10)
@@ -176,31 +173,51 @@
   }
 
   function currentColumn(issue: KataTaskSummary): BoardColumnID {
-    return pending.get(issue.uid) ?? columnFor(issue, columns)
+    return pending.get(issue.uid) ?? columnFor(issue)
   }
 
   async function moveTo(issue: KataTaskSummary, target: BoardColumnID): Promise<void> {
     if (!canMove || pending.has(issue.uid)) return
-    const plan = planBoardMove(issue, target, columns)
+    const plan = planBoardMove(issue, target)
     if (!plan) return
+    if (plan.blockedBy) {
+      const message = `${issue.title} is waiting on ${plan.blockedBy.join(', ')}. It moves on when that work closes.`
+      announcement = ''
+      showFlash(message)
+      return
+    }
     if (plan.close) {
       completing = issue
       return
     }
+    if (plan.flagAttention) {
+      flagging = { issue, plan }
+      flagReason = ''
+      return
+    }
+    await performMove(issue, target, plan)
+  }
+
+  async function performMove(
+    issue: KataTaskSummary,
+    target: BoardColumnID,
+    plan: BoardMovePlan,
+    reason?: string,
+  ): Promise<boolean> {
     const from = currentColumn(issue)
     markOwnChange(issue.uid)
     pending.set(issue.uid, target)
     announcement = `Moving ${issue.title} to ${columnTitle(target)}…`
     let moved = false
     try {
-      moved = await onMoveIssue(issue, plan)
+      moved = await onMoveIssue(issue, plan, reason)
     } finally {
       pending.delete(issue.uid)
       releaseOwnChange(issue.uid)
     }
     if (!moved) {
       announcement = `Could not move ${issue.title}. It is back in its column.`
-      return
+      return false
     }
     // The banner is a status region, so it carries the success message.
     announcement = ''
@@ -208,16 +225,42 @@
     if (lastMove) dismissFlash(lastMove.flash)
     lastMove = null
     const message = `Moved ${issue.title} to ${columnTitle(target)}.`
-    if (from === 'done' || undoing) {
-      // Undoing a reopen would close the issue, which needs a completion note.
+    // Only a plain claim or release can be undone exactly; reopening, flagging,
+    // and clearing attention cannot.
+    const undoable =
+      (plan.claim || plan.release) && !plan.reopen && !plan.clearAttention && !plan.flagAttention
+    if (!undoable || undoing) {
       showFlash(message)
-      return
+      return true
     }
     const flash = showFlash(message, {
       durationMs: undoMs,
       action: { label: 'Undo', onclick: () => void undoLastMove() },
     })
     lastMove = { uid: issue.uid, from, flash }
+    return true
+  }
+
+  // A move into Needs attention waits here for its one-line reason.
+  let flagging = $state<{ issue: KataTaskSummary; plan: BoardMovePlan } | null>(null)
+  let flagReason = $state('')
+  let flagSaving = $state(false)
+
+  async function submitFlag(): Promise<void> {
+    const pendingFlag = flagging
+    if (!pendingFlag || flagSaving) return
+    flagSaving = true
+    try {
+      const moved = await performMove(
+        pendingFlag.issue,
+        'attention',
+        pendingFlag.plan,
+        flagReason.trim() || undefined,
+      )
+      if (moved) flagging = null
+    } finally {
+      flagSaving = false
+    }
   }
 
   let undoing = false
@@ -365,11 +408,12 @@
   }
 
   function columnColor(column: BoardColumn<KataTaskSummary>): string {
-    if (column.kind === 'open') return 'var(--text-muted)'
-    if (column.kind === 'done') return 'var(--accent-green)'
-    const limit = columnLimit(column)
-    if (limit !== undefined && column.total > limit) return 'var(--accent-amber)'
-    return hashColor(column.label ?? '')
+    return {
+      open: 'var(--text-muted)',
+      'in-progress': 'var(--accent-blue)',
+      attention: 'var(--accent-amber)',
+      done: 'var(--accent-green)',
+    }[column.id]
   }
 
   // The column whose add-card form is open, its draft, and whether it is saving.
@@ -403,7 +447,7 @@
     ownTitles.add(title)
     setTimeout(() => ownTitles.delete(title), 10_000)
     try {
-      if (await onAddCard(title, column.label)) {
+      if (await onAddCard(title)) {
         // Stay open so several cards can be added in a row.
         addDraft = ''
         announcement = `Added ${title} to ${column.title}.`
@@ -427,15 +471,8 @@
     }
   }
 
-  function columnLimit(column: BoardColumn<KataTaskSummary>): number | undefined {
-    return column.kind === 'label' && column.label !== undefined ? limits[column.label] : undefined
-  }
-
   function columnLabel(column: BoardColumn<KataTaskSummary>): string {
-    const limit = columnLimit(column)
-    const base = `${column.title}, ${cardCount(column.total)}`
-    if (limit === undefined) return base
-    return column.total > limit ? `${base}, over its limit of ${limit}` : `${base}, limit ${limit}`
+    return `${column.title}, ${cardCount(column.total)}`
   }
 
   function commentLabel(count: number | undefined): string {
@@ -478,13 +515,12 @@
     {#each board.columns as column (column.id)}
       {@const headingID = `board-heading-${column.id}`}
       {@const collapsed = collapsedSet.has(column.id)}
-      {@const canCollapse = column.kind === 'done' || column.total === 0}
+      {@const canCollapse = column.id === 'done' || column.total === 0}
       <section
         class="board-column"
         class:collapsed
-        class:over-limit={columnLimit(column) !== undefined && column.total > columnLimit(column)!}
         class:drop-target={dropTarget === column.id && draggingUID !== null}
-        class:column--done={column.kind === 'done'}
+        class:column--done={column.id === 'done'}
         aria-label={columnLabel(column)}
         style:--column-color={columnColor(column)}
         ondragover={(event) => handleDragOver(event, column)}
@@ -506,11 +542,7 @@
               </button>
             {/if}
             <span class="column-dot" aria-hidden="true"></span>
-            <span class="column-count" aria-hidden="true"
-              >{column.total}{#if columnLimit(column) !== undefined}&nbsp;/ {columnLimit(
-                  column,
-                )}{/if}</span
-            >
+            <span class="column-count" aria-hidden="true">{column.total}</span>
             <h2 id={headingID} class="column-title column-title--vertical" title={column.title}>
               {column.title}
             </h2>
@@ -519,11 +551,7 @@
           <header class="column-header">
             <span class="column-dot" aria-hidden="true"></span>
             <h2 id={headingID} class="column-title" title={column.title}>{column.title}</h2>
-            <span class="column-count" aria-hidden="true"
-              >{column.total}{#if columnLimit(column) !== undefined}&nbsp;/ {columnLimit(
-                  column,
-                )}{/if}</span
-            >
+            <span class="column-count" aria-hidden="true">{column.total}</span>
             {#if onToggleColumn && canCollapse}
               <button
                 type="button"
@@ -542,7 +570,7 @@
           <!-- Collapsed: the strip keeps its count and still accepts drops. -->
         {:else if column.issues.length === 0}
           <p class="column-empty">
-            {column.kind === 'done' ? 'Nothing done yet' : 'No cards'}
+            {column.id === 'done' ? 'Nothing done yet' : 'No cards'}
           </p>
         {:else}
           <ul class="column-cards" aria-labelledby={headingID}>
@@ -553,8 +581,10 @@
               {@const depth = column.depths.get(issue.uid) ?? 0}
               {@const parent = issue.parent ? issuesByUID.get(issue.parent.uid) : undefined}
               {@const extraLabels = (issue.labels ?? []).filter(
-                (label) => !columnLabels.has(label),
+                (label) => label !== needsReviewLabel,
               )}
+              {@const reasons = column.id === 'attention' ? attentionReasons(issue) : []}
+              {@const waitingOn = column.id === 'attention' ? openBlockers(issue) : []}
               {@const deadline = deadlineOf(issue)}
               {@const blockers = issue.open_blocked_by?.length ?? 0}
               <li
@@ -578,7 +608,13 @@
                   class="card-open"
                   data-card-uid={issue.uid}
                   aria-labelledby={titleID}
-                  aria-describedby={[issue.parent ? relationID : '', compact ? '' : metaID]
+                  aria-describedby={[
+                    issue.parent ? relationID : '',
+                    !compact && (reasons.length > 0 || waitingOn.length > 0)
+                      ? `board-card-reason-${issue.uid}`
+                      : '',
+                    compact ? '' : metaID,
+                  ]
                     .filter(Boolean)
                     .join(' ') || undefined}
                   aria-current={issue.uid === selectedIssueUID ? 'true' : undefined}
@@ -609,6 +645,13 @@
                       <span>{issue.parent.short_id}</span>
                     </span>
                   {/if}
+                  {#if reasons.length > 0}
+                    <span class={`card-attention attention-${reasons[0]!.kind}`}
+                      >{attentionBadgeLabels[reasons[0]!.kind]}</span
+                    >
+                  {:else if waitingOn.length > 0}
+                    <span class="card-attention attention-blocked">Blocked</span>
+                  {/if}
                   {#if isEpic(issue)}
                     <span class="card-epic">Epic</span>
                   {/if}
@@ -620,6 +663,13 @@
                 {/if}
                 {#if !compact}
                   <p class="card-title" id={titleID}>{issue.title}</p>
+                  {#if reasons.length > 0 || waitingOn.length > 0}
+                    <p class="card-reason" id={`board-card-reason-${issue.uid}`}>
+                      {reasons.length > 0
+                        ? reasons.map((reason) => reason.text).join(' · ')
+                        : `Waiting on ${waitingOn.join(', ')}`}
+                    </p>
+                  {/if}
                   <div class="card-meta" id={metaID}>
                     {#if blockers > 0}
                       <span class="meta blocked" title="Open blockers">
@@ -682,7 +732,7 @@
             {/each}
           </ul>
         {/if}
-        {#if !collapsed && onAddCard && column.kind !== 'done'}
+        {#if !collapsed && onAddCard && column.id === 'open'}
           {#if addingTo === column.id}
             <div class="add-card">
               <textarea
@@ -719,7 +769,7 @@
             </button>
           {/if}
         {/if}
-        {#if !collapsed && column.kind === 'done' && column.total > column.issues.length}
+        {#if !collapsed && column.id === 'done' && column.total > column.issues.length}
           {@const more = Math.min(defaultDoneLimit, column.total - column.issues.length)}
           <button
             type="button"
@@ -751,6 +801,54 @@
     {/if}
   </MenuContent>
 </Menu>
+
+<Modal
+  open={flagging !== null}
+  title="Flag for attention"
+  width={440}
+  onClose={() => {
+    if (!flagSaving) flagging = null
+  }}
+>
+  <div class="flag-dialog">
+    <p class="flag-context">{flagging?.issue.title ?? ''}</p>
+    <label class="flag-field">
+      <span>What does it need? <small>(optional, one line)</small></span>
+      <input
+        aria-label="What does it need?"
+        bind:value={flagReason}
+        disabled={flagSaving}
+        maxlength="200"
+        placeholder="e.g. Pick between the two designs"
+        onkeydown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            void submitFlag()
+          }
+        }}
+      />
+    </label>
+  </div>
+  {#snippet footer()}
+    <Button
+      size="sm"
+      label="Cancel"
+      disabled={flagSaving}
+      onclick={() => {
+        flagging = null
+      }}
+    />
+    <Button
+      size="sm"
+      tone="info"
+      surface="solid"
+      label={flagSaving ? 'Flagging…' : 'Flag'}
+      ariaLabel="Flag for attention"
+      disabled={flagSaving}
+      onclick={() => void submitFlag()}
+    />
+  {/snippet}
+</Modal>
 
 <CompleteIssueDialog
   open={completing !== null}
@@ -1009,6 +1107,57 @@
     font-size: var(--font-size-2xs);
   }
 
+  /* Why a card is in Needs attention: a badge in the top row and, on
+     comfortable cards, the reason under the title. */
+  .card-attention {
+    padding: 0 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent-amber) 16%, transparent);
+    color: color-mix(in srgb, var(--accent-amber) 70%, var(--text-primary));
+    font-size: var(--font-size-2xs);
+    font-weight: var(--font-weight-semibold);
+    line-height: 16px;
+    white-space: nowrap;
+  }
+
+  .card-attention.attention-stuck,
+  .card-attention.attention-blocked {
+    background: color-mix(in srgb, var(--accent-red) 14%, transparent);
+    color: color-mix(in srgb, var(--accent-red) 75%, var(--text-primary));
+  }
+
+  .card-attention.attention-request {
+    background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+    color: color-mix(in srgb, var(--accent-blue) 75%, var(--text-primary));
+  }
+
+  .card-attention.attention-needs-review {
+    background: color-mix(in srgb, var(--accent-purple) 14%, transparent);
+    color: color-mix(in srgb, var(--accent-purple) 70%, var(--text-primary));
+  }
+
+  .card-top .card-attention {
+    margin-inline-start: auto;
+  }
+
+  .card-attention + .card-epic {
+    margin-inline-start: 0;
+  }
+
+  .card-reason {
+    position: relative;
+    display: -webkit-box;
+    margin: 0;
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-size: var(--font-size-xs);
+    line-height: 1.35;
+    pointer-events: none;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+
   .card-epic {
     margin-inline-start: auto;
     padding: 0 6px;
@@ -1234,14 +1383,42 @@
     }
   }
 
-  /* Over its limit, the header rule (via columnColor) and count turn amber,
-     and the column's accessible name says so, so it is never colour-only. */
-  .board-column.over-limit .column-count {
-    padding: 0 6px;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--accent-amber) 16%, transparent);
-    color: color-mix(in srgb, var(--accent-amber) 70%, var(--text-primary));
+  .flag-dialog {
+    display: grid;
+    gap: var(--space-4);
+  }
+
+  .flag-context {
+    margin: 0;
+    color: var(--text-primary);
     font-weight: var(--font-weight-semibold);
+  }
+
+  .flag-field {
+    display: grid;
+    gap: var(--space-2);
+    color: var(--text-muted);
+    font-size: var(--font-size-xs);
+  }
+
+  .flag-field small {
+    font-size: var(--font-size-xs);
+  }
+
+  .flag-field input {
+    height: 32px;
+    padding: 0 9px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: var(--font-size-sm);
+  }
+
+  .flag-field input:focus {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 1px;
   }
 
   .column-add {

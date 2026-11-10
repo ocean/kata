@@ -2028,7 +2028,7 @@ describe('App', () => {
     expect(await mutation.json()).toEqual({ actor: 'kata-web', patch: { role: 'inbox' } })
   })
 
-  it('adds a board card to the project with its column label', async () => {
+  it('adds a board card to the Open column of the project', async () => {
     history.replaceState(null, '', '/kata?scope=01J00000000000000000000002&layout=board#direct=1')
     sessionStorage.setItem(
       'kata.web.session.v1',
@@ -2039,10 +2039,7 @@ describe('App', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const request =
-          input instanceof Request
-            ? input
-            : new Request(new URL(String(input), window.location.origin), init)
+        const request = requestOf(input, init)
         requests.push(request)
         if (request.method === 'POST' && request.url.endsWith('/api/v1/projects/7/issues')) {
           return new Response(JSON.stringify({ issue: accepted.collection![0], changed: true }), {
@@ -2059,8 +2056,8 @@ describe('App', () => {
 
     render(App)
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Add card to in-progress' }))
-    const input = screen.getByRole('textbox', { name: 'New card in in-progress' })
+    await fireEvent.click(await screen.findByRole('button', { name: 'Add card to Open' }))
+    const input = screen.getByRole('textbox', { name: 'New card in Open' })
     await fireEvent.input(input, { target: { value: 'Write the board docs' } })
     await fireEvent.keyDown(input, { key: 'Enter' })
 
@@ -2072,34 +2069,33 @@ describe('App', () => {
       return found!
     })
     // Identity-mode authority attributes the write itself, so no actor is sent.
-    expect(await create.json()).toEqual({
-      title: 'Write the board docs',
-      labels: ['in-progress'],
-    })
+    expect(await create.json()).toEqual({ title: 'Write the board docs' })
     expect(create.headers.get('Idempotency-Key')).toBeTruthy()
   })
 
-  it('saves board columns and their limits in one project metadata update', async () => {
+  it('clears attention and claims a card moved from Needs attention to In progress', async () => {
     history.replaceState(null, '', '/kata?scope=01J00000000000000000000002&layout=board#direct=1')
     sessionStorage.setItem(
       'kata.web.session.v1',
       JSON.stringify({ session: 'tab-session', csrf: 'tab-csrf' }),
     )
     const accepted = snapshot()
+    accepted.collection![0]!.metadata = {
+      'work.attention': 'needs-human',
+      'work.attention_msg': 'Pick a design',
+    }
+    const issuePath = '/api/v1/projects/7/issues/01J00000000000000000000001'
     const requests: Request[] = []
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const request =
-          input instanceof Request
-            ? input
-            : new Request(new URL(String(input), window.location.origin), init)
+        const request = requestOf(input, init)
         requests.push(request)
-        if (request.method === 'POST' && request.url.endsWith('/api/v1/projects/7/metadata')) {
-          return new Response(
-            JSON.stringify({ changed: true, project: accepted.catalog[0]!.project }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } },
-          )
+        if (request.method === 'POST' && request.url.includes(issuePath)) {
+          return new Response(JSON.stringify({ issue: accepted.collection![0], changed: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
         }
         return new Response(JSON.stringify(accepted), {
           status: 200,
@@ -2110,25 +2106,21 @@ describe('App', () => {
 
     render(App)
 
-    await fireEvent.click(await screen.findByRole('button', { name: 'Edit board columns' }))
-    await fireEvent.input(screen.getByRole('spinbutton', { name: 'Card limit for in-progress' }), {
-      target: { value: '3' },
-    })
-    await fireEvent.click(screen.getByRole('button', { name: 'Save columns' }))
+    const card = await screen.findByRole('button', { name: 'Example issue' })
+    await fireEvent.keyDown(card, { key: 'ArrowLeft', altKey: true })
 
-    const patch = await waitFor(() => {
-      const found = requests.find(
-        (request) =>
-          request.method === 'POST' && request.url.endsWith('/api/v1/projects/7/metadata'),
+    const writes = await waitFor(() => {
+      const found = requests.filter(
+        (request) => request.method === 'POST' && request.url.includes(issuePath),
       )
-      expect(found).toBeDefined()
-      return found!
+      expect(found).toHaveLength(2)
+      return found
     })
-    expect(await patch.json()).toEqual({
-      actor: 'kata-web',
-      patch: { board_columns: ['in-progress'], board_column_limits: { 'in-progress': 3 } },
+    expect(new URL(writes[0]!.url).pathname).toBe(`${issuePath}/metadata`)
+    expect(await writes[0]!.json()).toEqual({
+      patch: { 'work.attention': 'ok', 'work.attention_msg': null },
     })
-    expect(patch.headers.get('If-Match')).toBe('"rev-2"')
+    expect(new URL(writes[1]!.url).pathname).toBe(`${issuePath}/actions/claim`)
   })
 
   it('changes the Inbox project from New task through one designation request', async () => {
