@@ -44,6 +44,11 @@
 - User or Developer Benefit: Pull requests must have a user-facing benefit or improve the developer
   experience, and the body must say which one.
 - English: Write issues and pull requests in English.
+- AI Attribution: End every commit message with a `Co-authored-by:` trailer naming the agent that
+  wrote the change.
+- AI Model Line: End the pull request description with a `Model used:` line naming the model, such
+  as `Model used: Opus 5.5` or `Model used: GPT-6.1 Sol`. Squash-merge keeps only the description,
+  so put the `Co-authored-by:` trailer there too.
 - No Unrequested GitHub Comments: Do not comment on GitHub issues or pull
   requests unless the user explicitly instructs you to post a comment.
 - No Compiled-In Source Paths: Never locate files from a path returned by
@@ -228,9 +233,16 @@ closes with `kata reopen <ref>`.
 
 ## CI runners
 
-All CI jobs use GitHub-hosted runners: `ubuntu-latest` for Linux and
+CI test jobs use GitHub-hosted runners: `ubuntu-latest` for Linux and
 `windows-2025` for Windows. Pull requests call the reusable test workflow from
 the same commit so workflow changes are exercised before merge.
+
+The `CI gate` job in `test-pr.yml` runs on the Namespace profile
+`namespace-profile-linux-1cpu` so it does not wait in the GitHub-hosted queue.
+That profile uses Namespace's
+[Restricted access level](https://namespace.so/docs/solutions/github-actions/runner-controls/access-levels),
+which disables workload access to Namespace features and APIs. GitHub fork
+approvals, token permissions, and secrets are separate controls.
 
 ## Repository-writer trust/threat model
 

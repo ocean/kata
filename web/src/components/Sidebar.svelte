@@ -23,6 +23,7 @@
     searchFilters: KataTaskSearchFilters
     /** Why project creation is blocked; undefined when it is allowed. */
     projectCreationBlockedReason: string | undefined
+    creationIntent?: 'project' | 'task' | null
     draftFenceGeneration?: number | undefined
     credentialAuditAvailable?: boolean | undefined
     credentialAuditActive?: boolean | undefined
@@ -37,6 +38,7 @@
     currentView,
     searchFilters,
     projectCreationBlockedReason,
+    creationIntent = $bindable(null),
     draftFenceGeneration = 0,
     credentialAuditAvailable = false,
     credentialAuditActive = false,
@@ -61,7 +63,11 @@
     { name: 'scheduled', label: 'Scheduled', icon: AlarmClockIcon },
   ]
 
-  let creatingProject = $state(false)
+  let creatingProject = $derived(creationIntent !== null)
+  $effect(() => {
+    if (creatingProject) queueMicrotask(() => createInput?.focus())
+    else createDraft = ''
+  })
   let createDraft = $state('')
   let createSaving = $state(false)
   let createInput: HTMLInputElement | null = $state(null)
@@ -109,14 +115,11 @@
 
   function startCreatingProject(): void {
     if (projectCreationBlockedReason) return
-    creatingProject = true
-    createDraft = ''
-    queueMicrotask(() => createInput?.focus())
+    creationIntent = 'project'
   }
 
   function cancelCreatingProject(): void {
-    creatingProject = false
-    createDraft = ''
+    creationIntent = null
   }
 
   async function submitCreateProject(): Promise<void> {
@@ -125,8 +128,7 @@
     createSaving = true
     try {
       await onCreateProject(name)
-      creatingProject = false
-      createDraft = ''
+      creationIntent = null
     } catch (err) {
       showFlash(err instanceof Error ? err.message : 'Could not create project.', {
         tone: 'danger',

@@ -6,6 +6,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,7 +21,7 @@ import (
 	"go.kenn.io/kata/internal/cron"
 	"go.kenn.io/kata/internal/db"
 	"go.kenn.io/kata/internal/testenv"
-	"hegel.dev/go/hegel"
+	"pgregory.net/rapid"
 )
 
 // The explicit contract is that edit owns the revision and actor, keeps
@@ -104,6 +105,76 @@ func requireCronEditExit(t *testing.T, err error, code int) {
 	ce, ok := errors.AsType[*cliError](err)
 	require.True(t, ok, "expected CLI error, got %v", err)
 	require.Equal(t, code, ce.ExitCode)
+}
+
+func cronEditTestStaleJob(t *testing.T, env *testenv.Env, project int64, id string) {
+	t.Helper()
+	job, err := env.DB.CronJob(t.Context(), project, id)
+	require.NoError(t, err)
+	job.Definition.Trigger = cron.Trigger{Kind: "cron", Cron: "0 0 30 2 *"}
+	raw, err := json.Marshal(job.Definition)
+	require.NoError(t, err)
+	_, err = env.DB.ExecContext(t.Context(), `UPDATE cron_jobs SET definition_json=? WHERE uid=?`, string(raw), id)
+	require.NoError(t, err)
+}
+
+func TestCronEditStaleJobRepair(t *testing.T) {
+	for _, repair := range []bool{false, true} {
+		t.Run(fmt.Sprintf("repair=%t", repair), func(t *testing.T) {
+			env, project, id, original := cronEditTestDefinition(t, "job")
+			cronEditTestStaleJob(t, env, project, id)
+			session := cronEditTestEditor(t, func(_ int, raw []byte) ([]byte, error) {
+				if repair {
+					return bytes.ReplaceAll(raw, []byte("0 0 30 2 *"), []byte("0 0 28 2 *")), nil
+				}
+				return nil, nil
+			})
+			out, _, err := executeCronCLI(t, env.URL, nil, "job", "edit", id)
+			if repair {
+				require.NoError(t, err)
+				require.Equal(t, 1, session.calls)
+				require.Contains(t, out, "9007199254740993")
+				require.Contains(t, out, "1.2300e+02")
+			} else {
+				requireCronEditExit(t, err, ExitValidation)
+				require.Equal(t, 2, session.calls)
+				require.ErrorContains(t, err, "never fires")
+			}
+			stored, err := env.DB.CronJob(t.Context(), project, id)
+			require.NoError(t, err)
+			if repair {
+				require.NotEqual(t, original, stored.DefinitionEventUID)
+				require.Equal(t, "0 0 28 2 *", stored.Definition.Trigger.Cron)
+				require.Contains(t, string(stored.Definition.Options), `"empty":{}`)
+			} else {
+				require.Equal(t, original, stored.DefinitionEventUID)
+			}
+		})
+	}
+	// Stored-read tolerance must never swallow unrelated domain errors. These
+	// rules precede occurrence validation, so removing tolerance does not fail
+	// these cases; accepting every ErrInvalid does.
+	for _, fault := range []string{"version", "overlap"} {
+		t.Run(fault, func(t *testing.T) {
+			raw := cronEditValidTestBody("job", jsontext.Value(`{}`))
+			var envelope map[string]jsontext.Value
+			require.NoError(t, json.Unmarshal(raw, &envelope))
+			var definition map[string]jsontext.Value
+			require.NoError(t, json.Unmarshal(envelope["definition"], &definition))
+			definition["trigger"] = jsontext.Value(`{"kind":"cron","cron":"0 0 30 2 *"}`)
+			if fault == "version" {
+				definition["version"] = jsontext.Value(`2`)
+			} else {
+				definition["overlap"] = jsontext.Value(`"unsupported"`)
+			}
+			envelope["definition"], _ = json.Marshal(definition)
+			raw, _ = json.Marshal(envelope)
+			for _, stored := range []bool{false, true} {
+				_, err := parseCronEdit("job", raw, stored)
+				require.ErrorContains(t, err, fault)
+			}
+		})
+	}
 }
 
 func TestCronEditSavesDefinitions(t *testing.T) {
@@ -323,20 +394,24 @@ func TestCronEditRetainsDraftOnEditorFailure(t *testing.T) {
 }
 
 func TestCronEditBufferRoundTripProperty(t *testing.T) {
-	hegel.Test(t, func(ht *hegel.T) {
-		text := hegel.Draw(ht, hegel.Text())
+	// Rapid configures case counts per process; keep this test's existing budget.
+	previousChecks := flag.Lookup("rapid.checks").Value.String()
+	require.NoError(t, flag.Set("rapid.checks", "1000"))
+	defer func() { require.NoError(t, flag.Set("rapid.checks", previousChecks)) }()
+	rapid.Check(t, func(rt *rapid.T) {
+		text := rapid.String().Draw(rt, "text")
 		body, err := json.Marshal(map[string]any{"name": text, "definition": map[string]any{"value": text, "number": jsontext.Value(`9007199254740993`)}})
 		if err != nil {
-			ht.Fatal(err)
+			rt.Fatal(err)
 		}
 		for _, resource := range []string{"job", "workflow"} {
 			buffer := cronEditBuffer(resource, "01J00000000000000000000001", "01J00000000000000000000002", body, []string{"error: example\n// nested"})
 			got, conflict := cronEditSplit(buffer)
 			if !bytes.Equal(got, body) || conflict {
-				ht.Fatalf("buffer changed body: %q != %q (conflict %v)", got, body, conflict)
+				rt.Fatalf("buffer changed body: %q != %q (conflict %v)", got, body, conflict)
 			}
 		}
-	}, hegel.WithTestCases(1000), hegel.WithDatabase(t.TempDir()))
+	})
 }
 
 func TestCronEditHeaderStripsOnlyLeadingComments(t *testing.T) {
@@ -347,8 +422,11 @@ func TestCronEditHeaderStripsOnlyLeadingComments(t *testing.T) {
 }
 
 func TestCronEditUnknownFieldsProperty(t *testing.T) {
-	hegel.Test(t, func(ht *hegel.T) {
-		field := "extra_" + hegel.Draw(ht, hegel.Text())
+	previousChecks := flag.Lookup("rapid.checks").Value.String()
+	require.NoError(t, flag.Set("rapid.checks", "1000"))
+	defer func() { require.NoError(t, flag.Set("rapid.checks", previousChecks)) }()
+	rapid.Check(t, func(rt *rapid.T) {
+		field := "extra_" + rapid.String().Draw(rt, "text")
 		for _, resource := range []string{"job", "workflow"} {
 			definition := jsontext.Value(`{"version":1,"steps":[{"key":"inspect","kind":"command","command":"git status"}]}`)
 			if resource == "job" {
@@ -356,13 +434,13 @@ func TestCronEditUnknownFieldsProperty(t *testing.T) {
 			}
 			raw, err := json.Marshal(map[string]any{"name": "Inspection", "definition": definition, field: true})
 			if err != nil {
-				ht.Fatal(err)
+				rt.Fatal(err)
 			}
 			if _, err := cronEditParse(resource, raw); err == nil {
-				ht.Fatalf("%s accepted unknown field %q", resource, field)
+				rt.Fatalf("%s accepted unknown field %q", resource, field)
 			}
 		}
-	}, hegel.WithTestCases(1000), hegel.WithDatabase(t.TempDir()))
+	})
 }
 
 func TestCronEditNormalizationPreservesNumberTokens(t *testing.T) {
@@ -409,9 +487,12 @@ func TestCronEditLineDiff(t *testing.T) {
 }
 
 func TestCronEditLineDiffAccountsForChangesProperty(t *testing.T) {
-	hegel.Test(t, func(ht *hegel.T) {
-		a := hegel.Draw(ht, hegel.Lists(hegel.Text()))
-		b := hegel.Draw(ht, hegel.Lists(hegel.Text()))
+	previousChecks := flag.Lookup("rapid.checks").Value.String()
+	require.NoError(t, flag.Set("rapid.checks", "1000"))
+	defer func() { require.NoError(t, flag.Set("rapid.checks", previousChecks)) }()
+	rapid.Check(t, func(rt *rapid.T) {
+		a := rapid.SliceOf(rapid.String()).Draw(rt, "lines")
+		b := rapid.SliceOf(rapid.String()).Draw(rt, "lines")
 		// Materialize small complete diffs; the separate scale probe covers
 		// the intentionally truncated large-document path.
 		for _, lines := range []*[]string{&a, &b} {
@@ -455,7 +536,7 @@ func TestCronEditLineDiffAccountsForChangesProperty(t *testing.T) {
 			best = max(best, matched)
 		}
 		if len(diff) != len(a)+len(b)-2*best {
-			ht.Fatalf("nonminimal small diff: %d lines, LCS %d", len(diff), best)
+			rt.Fatalf("nonminimal small diff: %d lines, LCS %d", len(diff), best)
 		}
 		for _, line := range diff {
 			switch {
@@ -464,15 +545,15 @@ func TestCronEditLineDiffAccountsForChangesProperty(t *testing.T) {
 			case strings.HasPrefix(line, "+ "):
 				balance[line[2:]]++
 			default:
-				ht.Fatalf("unexpected diff line %q", line)
+				rt.Fatalf("unexpected diff line %q", line)
 			}
 		}
 		for line, remaining := range balance {
 			if remaining != 0 {
-				ht.Fatalf("diff lost change %q: balance %d", line, remaining)
+				rt.Fatalf("diff lost change %q: balance %d", line, remaining)
 			}
 		}
-	}, hegel.WithTestCases(1000), hegel.WithDatabase(t.TempDir()))
+	})
 }
 
 // A PUT failure is deliberately not retried. The saved header is the CAS
@@ -520,13 +601,16 @@ func TestCronEditOwnsRequestFlags(t *testing.T) {
 }
 
 func TestCronEditConflictMarkerWhitespaceProperty(t *testing.T) {
-	hegel.Test(t, func(ht *hegel.T) {
-		padding := strings.Repeat(" ", hegel.Draw(ht, hegel.Integers(1, 20)))
+	previousChecks := flag.Lookup("rapid.checks").Value.String()
+	require.NoError(t, flag.Set("rapid.checks", "100"))
+	defer func() { require.NoError(t, flag.Set("rapid.checks", previousChecks)) }()
+	rapid.Check(t, func(rt *rapid.T) {
+		padding := strings.Repeat(" ", rapid.IntRange(1, 20).Draw(rt, "padding"))
 		body, marked := cronEditSplit([]byte("// header\n//" + padding + strings.TrimPrefix(cronEditConflictMarker, "// ") + padding + "\r\n{}"))
 		if !marked || string(body) != "{}" {
-			ht.Fatalf("whitespace acknowledged conflict: %q, marked=%v", body, marked)
+			rt.Fatalf("whitespace acknowledged conflict: %q, marked=%v", body, marked)
 		}
-	}, hegel.WithTestCases(100), hegel.WithDatabase(t.TempDir()))
+	})
 }
 
 func TestCronEditRecoveryWriteReplacesDraftPrivately(t *testing.T) {
@@ -616,10 +700,13 @@ type cronEditFailWriter struct{}
 func (cronEditFailWriter) Write([]byte) (int, error) { return 0, errors.New("output unavailable") }
 
 func TestCronEditPartialHeaderWritePreservesDraftProperty(t *testing.T) {
-	hegel.Test(t, func(ht *hegel.T) {
-		body := []byte("draft " + hegel.Draw(ht, hegel.Text()))
+	previousChecks := flag.Lookup("rapid.checks").Value.String()
+	require.NoError(t, flag.Set("rapid.checks", "100"))
+	defer func() { require.NoError(t, flag.Set("rapid.checks", previousChecks)) }()
+	rapid.Check(t, func(rt *rapid.T) {
+		body := []byte("draft " + rapid.String().Draw(rt, "text"))
 		path := t.TempDir() + "/draft.json"
-		require.NoError(ht, os.WriteFile(path, body, 0o600))
+		require.NoError(rt, os.WriteFile(path, body, 0o600))
 		original := cronEditWriteTemp
 		defer func() { cronEditWriteTemp = original }()
 		cronEditWriteTemp = func(file *os.File, raw []byte) (int, error) {
@@ -630,13 +717,13 @@ func TestCronEditPartialHeaderWritePreservesDraftProperty(t *testing.T) {
 			return n, io.ErrShortWrite
 		}
 		if err := writeCronEditFile(t.Context(), path, append([]byte("// recovery\n"), body...)); err == nil {
-			ht.Fatal("partial header write succeeded")
+			rt.Fatal("partial header write succeeded")
 		}
 		got, err := os.ReadFile(path) //nolint:gosec // The draft path is inside t.TempDir.
 		if err != nil || !bytes.Equal(body, got) {
-			ht.Fatalf("partial header write lost draft: %q != %q (%v)", got, body, err)
+			rt.Fatalf("partial header write lost draft: %q != %q (%v)", got, body, err)
 		}
-	}, hegel.WithTestCases(100), hegel.WithDatabase(t.TempDir()))
+	})
 }
 
 func cronEditValidTestBody(resource string, options jsontext.Value) []byte {
@@ -653,12 +740,15 @@ func cronEditValidTestBody(resource string, options jsontext.Value) []byte {
 }
 
 func TestCronEditValidOpaqueRoundTripProperty(t *testing.T) {
+	previousChecks := flag.Lookup("rapid.checks").Value.String()
+	require.NoError(t, flag.Set("rapid.checks", "1000"))
+	defer func() { require.NoError(t, flag.Set("rapid.checks", previousChecks)) }()
 	tokens := []string{"9007199254740993", "12345678901234567890123", "-0", "1.0", "1e0", "1E+00", "1e308", "1e-9999", "1e9999"}
-	hegel.Test(t, func(ht *hegel.T) {
-		text := hegel.Draw(ht, hegel.Text())
-		token := tokens[hegel.Draw(ht, hegel.Integers(0, len(tokens)-1))]
+	rapid.Check(t, func(rt *rapid.T) {
+		text := rapid.String().Draw(rt, "text")
+		token := rapid.SampledFrom(tokens).Draw(rt, "number token")
 		options, err := json.Marshal(map[string]any{"text": text, "empty": jsontext.Value(`{}`), "values": jsontext.Value(`[null,[],{},true,` + token + `]`)})
-		require.NoError(ht, err)
+		require.NoError(rt, err)
 		for _, resource := range []string{"job", "workflow"} {
 			body := cronEditValidTestBody(resource, options)
 			rendered := cronEditBuffer(resource, "example", "revision", cronEditPretty(body), nil)
@@ -667,24 +757,24 @@ func TestCronEditValidOpaqueRoundTripProperty(t *testing.T) {
 			// Existing domain validation decodes options into float64 for its
 			// portable-field checks, and rejects overflow. Edit shares that rule.
 			if token == "1e9999" {
-				require.Error(ht, err)
+				require.Error(rt, err)
 				continue
 			}
-			require.NoError(ht, err)
+			require.NoError(rt, err)
 			var definition map[string]jsontext.Value
-			require.NoError(ht, json.Unmarshal(parsed["definition"], &definition))
+			require.NoError(rt, json.Unmarshal(parsed["definition"], &definition))
 			expected, actual := jsontext.Value(options).Clone(), definition["options"].Clone()
 			opts := []jsontext.Options{jsontext.CanonicalizeRawInts(false), jsontext.CanonicalizeRawFloats(false)}
-			require.NoError(ht, expected.Canonicalize(opts...))
-			require.NoError(ht, actual.Canonicalize(opts...))
-			require.Equal(ht, expected, actual)
+			require.NoError(rt, expected.Canonicalize(opts...))
+			require.NoError(rt, actual.Canonicalize(opts...))
+			require.Equal(rt, expected, actual)
 			normalized, err := json.Marshal(parsed)
-			require.NoError(ht, err)
+			require.NoError(rt, err)
 			second, err := cronEditParse(resource, normalized)
-			require.NoError(ht, err)
-			require.Equal(ht, parsed, second)
+			require.NoError(rt, err)
+			require.Equal(rt, parsed, second)
 		}
-	}, hegel.WithTestCases(1000), hegel.WithDatabase(t.TempDir()))
+	})
 }
 
 func TestCronEditRejectsMalformedEnvelopes(t *testing.T) {
@@ -714,22 +804,25 @@ func TestCronEditRejectsMalformedEnvelopes(t *testing.T) {
 }
 
 func TestCronEditTrimmedNameBytesProperty(t *testing.T) {
-	hegel.Test(t, func(ht *hegel.T) {
-		n := hegel.Draw(ht, hegel.Integers(0, 257))
+	previousChecks := flag.Lookup("rapid.checks").Value.String()
+	require.NoError(t, flag.Set("rapid.checks", "1000"))
+	defer func() { require.NoError(t, flag.Set("rapid.checks", previousChecks)) }()
+	rapid.Check(t, func(rt *rapid.T) {
+		n := rapid.IntRange(0, 257).Draw(rt, "name bytes")
 		name := strings.Repeat("é", n/2) + strings.Repeat("a", n%2)
 		for _, resource := range []string{"job", "workflow"} {
 			body := cronEditTestRename(cronEditValidTestBody(resource, jsontext.Value(`{}`)), "\u2003"+name+"\u2003")
 			parsed, err := cronEditParse(resource, body)
 			if n == 0 || n > 256 {
-				require.Error(ht, err)
+				require.Error(rt, err)
 				continue
 			}
-			require.NoError(ht, err)
+			require.NoError(rt, err)
 			var got string
-			require.NoError(ht, json.Unmarshal(parsed["name"], &got))
-			require.Equal(ht, name, got)
+			require.NoError(rt, json.Unmarshal(parsed["name"], &got))
+			require.Equal(rt, name, got)
 		}
-	}, hegel.WithTestCases(1000), hegel.WithDatabase(t.TempDir()))
+	})
 }
 
 func TestCronEditBodyAndHeaderLimits(t *testing.T) {
@@ -824,6 +917,7 @@ func TestCronEditConflictFallsBackToShow(t *testing.T) {
 						next, _, err := env.DB.PutCronJob(t.Context(), db.PutCronJob{UID: id, ProjectID: project, Name: "Other writer", Definition: job.Definition, ExpectedEventUID: original, Actor: "other"})
 						require.NoError(t, err)
 						current = next.DefinitionEventUID
+						cronEditTestStaleJob(t, env, project, id)
 					} else {
 						workflow, err := env.DB.CronWorkflow(t.Context(), project, id)
 						require.NoError(t, err)

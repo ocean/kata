@@ -1202,6 +1202,9 @@ func (d *Store) materializeFederatedProject(ctx context.Context, projectID int64
 	}); err != nil {
 		return err
 	}
+	if err := db.RecordMCPEventsRematch(ctx, tx, db.FederationPulledEventUIDs(ctx)); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit federated materialization: %w", err)
 	}
@@ -1867,6 +1870,10 @@ func federationFoldEventsScoped(ctx context.Context, tx *sql.Tx, projectID int64
 	if err != nil {
 		return nil, fmt.Errorf("list federated events: %w", err)
 	}
+	return scanFederationFoldEvents(rows, issueScope)
+}
+
+func scanFederationFoldEvents(rows *sql.Rows, issueScope []string) ([]db.FoldEvent, error) {
 	defer func() { _ = rows.Close() }()
 	var out []db.FoldEvent
 	for rows.Next() {
@@ -2737,7 +2744,7 @@ func federationGroupFoldProjection(
 		}
 		events = append(events, projectEvents...)
 	}
-	events, err := filterRelayCrossProjectLinkEvents(ctx, tx, projectIDs, events)
+	events, _, err := filterRelayCrossProjectLinkEvents(ctx, tx, projectIDs, events)
 	if err != nil {
 		return db.FoldProjection{}, err
 	}
