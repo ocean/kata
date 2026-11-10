@@ -12,6 +12,8 @@
   } from '@kenn-io/kit-ui'
   import { hashColor } from '@kenn-io/kit-ui/utils/color-hash'
   import CalendarIcon from '@lucide/svelte/icons/calendar'
+  import CirclePauseIcon from '@lucide/svelte/icons/circle-pause'
+  import HourglassIcon from '@lucide/svelte/icons/hourglass'
   import CornerDownRightIcon from '@lucide/svelte/icons/corner-down-right'
   import FoldHorizontalIcon from '@lucide/svelte/icons/fold-horizontal'
   import UnfoldHorizontalIcon from '@lucide/svelte/icons/unfold-horizontal'
@@ -24,17 +26,25 @@
   import { SvelteMap, SvelteSet } from 'svelte/reactivity'
 
   import {
+    askRecipient,
     buildBoard,
+    cardMarkers,
     columnFor,
     defaultDoneLimit,
-    openBlockers,
     isEpic,
+    moveTargets,
     planBoardMove,
     type BoardColumn,
     type BoardColumnID,
     type BoardMovePlan,
   } from '../lib/kata/board'
-  import { attentionBadgeLabels, attentionReasons, needsReviewLabel } from '../lib/kata/attention'
+  import {
+    attentionBadgeLabels,
+    attentionReasons,
+    needsReviewLabel,
+    type AttentionViewer,
+  } from '../lib/kata/attention'
+  import { localDateString } from '../lib/kata/dates'
   import type { KataTaskCloseRequest, KataTaskSummary } from '../lib/kata/types'
   import CompleteIssueDialog from './CompleteIssueDialog.svelte'
   import Modal from './Modal.svelte'
@@ -48,8 +58,13 @@
     /** Set when cards cannot move; the board shows it and stays read-only. */
     moveBlockedReason?: string | undefined
     onOpenIssue: (issue: KataTaskSummary) => void
-    /** Performs a move; `reason` is the one-line note given when flagging for attention. */
-    onMoveIssue: (issue: KataTaskSummary, plan: BoardMovePlan, reason?: string) => Promise<boolean>
+    onMoveIssue: (issue: KataTaskSummary, plan: BoardMovePlan) => Promise<boolean>
+    /** Sends a `kata notify` request about the issue; the card does not move. */
+    onAskIssue?:
+      | ((issue: KataTaskSummary, to: string, message: string) => Promise<boolean>)
+      | undefined
+    /** Whose attention the board reads; see AttentionViewer. */
+    viewer?: AttentionViewer | undefined
     onCompleteIssue: (issue: KataTaskSummary, request: KataTaskCloseRequest) => Promise<boolean>
     /** Closed issues the server counted; set when Done is paged on the server. */
     doneTotal?: number | undefined
@@ -78,6 +93,8 @@
     onOpenIssue,
     onMoveIssue,
     onCompleteIssue,
+    onAskIssue = undefined,
+    viewer = undefined,
     doneTotal = undefined,
     onShowMoreDone = undefined,
     compact = false,
@@ -105,7 +122,7 @@
 
   $effect(() => {
     const key = scopeKey
-    const current = new Map(issues.map((issue) => [issue.uid, columnFor(issue)]))
+    const current = new Map(issues.map((issue) => [issue.uid, columnFor(issue, { viewer })]))
     const previous = seenColumns
     seenColumns = current
     // A new scope or filter is a new view, not a change to flag.
@@ -161,38 +178,32 @@
     buildBoard(issues, {
       doneLimit,
       pending,
+      viewer,
       doneTotal: serverPaged ? doneTotal : undefined,
     }),
   )
   let collapsedSet = $derived(new Set(collapsedColumns))
   let issuesByUID = $derived(new Map(issues.map((issue) => [issue.uid, issue])))
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateString()
 
   function columnTitle(id: BoardColumnID): string {
     return board.columns.find((column) => column.id === id)?.title ?? id
   }
 
   function currentColumn(issue: KataTaskSummary): BoardColumnID {
-    return pending.get(issue.uid) ?? columnFor(issue)
+    return pending.get(issue.uid) ?? columnFor(issue, { viewer })
+  }
+
+  function canDropOn(issue: KataTaskSummary, target: BoardColumnID): boolean {
+    return planBoardMove(issue, target, { viewer }) !== undefined
   }
 
   async function moveTo(issue: KataTaskSummary, target: BoardColumnID): Promise<void> {
     if (!canMove || pending.has(issue.uid)) return
-    const plan = planBoardMove(issue, target)
+    const plan = planBoardMove(issue, target, { viewer })
     if (!plan) return
-    if (plan.blockedBy) {
-      const message = `${issue.title} is waiting on ${plan.blockedBy.join(', ')}. It moves on when that work closes.`
-      announcement = ''
-      showFlash(message)
-      return
-    }
     if (plan.close) {
       completing = issue
-      return
-    }
-    if (plan.flagAttention) {
-      flagging = { issue, plan }
-      flagReason = ''
       return
     }
     await performMove(issue, target, plan)
@@ -202,7 +213,6 @@
     issue: KataTaskSummary,
     target: BoardColumnID,
     plan: BoardMovePlan,
-    reason?: string,
   ): Promise<boolean> {
     const from = currentColumn(issue)
     markOwnChange(issue.uid)
@@ -210,7 +220,7 @@
     announcement = `Moving ${issue.title} to ${columnTitle(target)}…`
     let moved = false
     try {
-      moved = await onMoveIssue(issue, plan, reason)
+      moved = await onMoveIssue(issue, plan)
     } finally {
       pending.delete(issue.uid)
       releaseOwnChange(issue.uid)
@@ -225,10 +235,9 @@
     if (lastMove) dismissFlash(lastMove.flash)
     lastMove = null
     const message = `Moved ${issue.title} to ${columnTitle(target)}.`
-    // Only a plain claim or release can be undone exactly; reopening, flagging,
-    // and clearing attention cannot.
-    const undoable =
-      (plan.claim || plan.release) && !plan.reopen && !plan.clearAttention && !plan.flagAttention
+    // Only a plain claim or release can be undone exactly; reopening and
+    // clearing attention cannot.
+    const undoable = (plan.claim || plan.release) && !plan.reopen && !plan.clearAttention
     if (!undoable || undoing) {
       showFlash(message)
       return true
@@ -241,25 +250,37 @@
     return true
   }
 
-  // A move into Needs attention waits here for its one-line reason.
-  let flagging = $state<{ issue: KataTaskSummary; plan: BoardMovePlan } | null>(null)
-  let flagReason = $state('')
-  let flagSaving = $state(false)
+  // "Ask…" sends a kata notify request to the owner (or author) and waits here
+  // for its message. Only the waiting party raises attention, so the card stays put.
+  let asking = $state<{ issue: KataTaskSummary; to: string } | null>(null)
+  let askMessage = $state('')
+  let askSaving = $state(false)
 
-  async function submitFlag(): Promise<void> {
-    const pendingFlag = flagging
-    if (!pendingFlag || flagSaving) return
-    flagSaving = true
+  function canAsk(issue: KataTaskSummary): boolean {
+    return (
+      onAskIssue !== undefined &&
+      issue.status === 'open' &&
+      askRecipient(issue) !== (viewer?.actor ?? '')
+    )
+  }
+
+  function openAsk(issue: KataTaskSummary): void {
+    asking = { issue, to: askRecipient(issue) }
+    askMessage = ''
+  }
+
+  async function submitAsk(): Promise<void> {
+    const request = asking
+    const message = askMessage.trim()
+    if (!request || !message || askSaving || !onAskIssue) return
+    askSaving = true
     try {
-      const moved = await performMove(
-        pendingFlag.issue,
-        'attention',
-        pendingFlag.plan,
-        flagReason.trim() || undefined,
-      )
-      if (moved) flagging = null
+      if (await onAskIssue(request.issue, request.to, message)) {
+        asking = null
+        showFlash(`Asked ${request.to} about ${request.issue.title}.`)
+      }
     } finally {
-      flagSaving = false
+      askSaving = false
     }
   }
 
@@ -314,9 +335,15 @@
     return closed
   }
 
+  // The nearest column in that direction the card can move to; Alt+→ from In
+  // progress skips Needs attention, which no move enters.
   function adjacentColumn(issue: KataTaskSummary, step: -1 | 1): BoardColumnID | undefined {
     const index = board.columns.findIndex((column) => column.id === currentColumn(issue))
-    return board.columns[index + step]?.id
+    for (let next = index + step; next >= 0 && next < board.columns.length; next += step) {
+      const id = board.columns[next]!.id
+      if (canDropOn(issue, id)) return id
+    }
+    return undefined
   }
 
   function focusCard(uid: string): void {
@@ -382,6 +409,9 @@
 
   function handleDragOver(event: DragEvent, column: BoardColumn<KataTaskSummary>): void {
     if (!draggingUID) return
+    const issue = issuesByUID.get(draggingUID)
+    // Not cancelling the event shows the browser's "no drop" cursor.
+    if (!issue || !canDropOn(issue, column.id)) return
     event.preventDefault()
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
     dropTarget = column.id
@@ -583,10 +613,9 @@
               {@const extraLabels = (issue.labels ?? []).filter(
                 (label) => label !== needsReviewLabel,
               )}
-              {@const reasons = column.id === 'attention' ? attentionReasons(issue) : []}
-              {@const waitingOn = column.id === 'attention' ? openBlockers(issue) : []}
+              {@const reasons = column.id === 'attention' ? attentionReasons(issue, viewer) : []}
+              {@const markers = cardMarkers(issue, today)}
               {@const deadline = deadlineOf(issue)}
-              {@const blockers = issue.open_blocked_by?.length ?? 0}
               <li
                 class="card"
                 class:selected={issue.uid === selectedIssueUID}
@@ -610,9 +639,7 @@
                   aria-labelledby={titleID}
                   aria-describedby={[
                     issue.parent ? relationID : '',
-                    !compact && (reasons.length > 0 || waitingOn.length > 0)
-                      ? `board-card-reason-${issue.uid}`
-                      : '',
+                    !compact && reasons.length > 0 ? `board-card-reason-${issue.uid}` : '',
                     compact ? '' : metaID,
                   ]
                     .filter(Boolean)
@@ -649,8 +676,6 @@
                     <span class={`card-attention attention-${reasons[0]!.kind}`}
                       >{attentionBadgeLabels[reasons[0]!.kind]}</span
                     >
-                  {:else if waitingOn.length > 0}
-                    <span class="card-attention attention-blocked">Blocked</span>
                   {/if}
                   {#if isEpic(issue)}
                     <span class="card-epic">Epic</span>
@@ -663,19 +688,24 @@
                 {/if}
                 {#if !compact}
                   <p class="card-title" id={titleID}>{issue.title}</p>
-                  {#if reasons.length > 0 || waitingOn.length > 0}
+                  {#if reasons.length > 0}
                     <p class="card-reason" id={`board-card-reason-${issue.uid}`}>
-                      {reasons.length > 0
-                        ? reasons.map((reason) => reason.text).join(' · ')
-                        : `Waiting on ${waitingOn.join(', ')}`}
+                      {reasons.map((reason) => reason.text).join(' · ')}
                     </p>
                   {/if}
                   <div class="card-meta" id={metaID}>
-                    {#if blockers > 0}
-                      <span class="meta blocked" title="Open blockers">
-                        <OctagonAlertIcon size={11} strokeWidth={2} aria-hidden="true" />
-                        <span class="kit-sr-only">Blocked by</span>
-                        {blockers}
+                    {#if issue.status === 'open' && markers.waitingOn.length > 0}
+                      <span class="meta waiting" title="Not ready until these close">
+                        <HourglassIcon size={11} strokeWidth={2} aria-hidden="true" />
+                        Waiting on {markers.waitingOn.join(', ')}
+                      </span>
+                    {/if}
+                    {#if issue.status === 'open' && markers.parked}
+                      <span class="meta parked" title="Parked: kata next skips it">
+                        <CirclePauseIcon size={11} strokeWidth={2} aria-hidden="true" />
+                        {markers.parked.kind === 'someday'
+                          ? 'Someday'
+                          : `Starts ${shortDate(markers.parked.date)}`}
                       </span>
                     {/if}
                     {#if issue.child_counts && issue.child_counts.total > 0}
@@ -718,9 +748,9 @@
                   <button
                     type="button"
                     class="card-menu"
-                    aria-label={`Move ${issue.title}`}
+                    aria-label={`Actions for ${issue.title}`}
                     aria-haspopup="menu"
-                    title="Move to…"
+                    title="Move or ask…"
                     tabindex="-1"
                     disabled={pending.has(issue.uid)}
                     onclick={(event) => openMenu(event, issue)}
@@ -792,60 +822,67 @@
 <FlashBanner top="72px" />
 
 <Menu bind:open={menuOpen} anchor={menuAnchor} returnFocus={menuReturn} align="end">
-  <MenuContent ariaLabel="Move to column">
+  <MenuContent ariaLabel="Card actions">
     {#if menuIssue}
       {@const issue = menuIssue}
-      {#each board.columns.filter((column) => column.id !== currentColumn(issue)) as column (column.id)}
-        <MenuItem onselect={() => void moveTo(issue, column.id)}>{column.title}</MenuItem>
+      {#each moveTargets(issue, { viewer }) as target (target)}
+        <MenuItem onselect={() => void moveTo(issue, target)}
+          >Move to {columnTitle(target)}</MenuItem
+        >
       {/each}
+      {#if canAsk(issue)}
+        <MenuItem onselect={() => openAsk(issue)}>Ask {askRecipient(issue)}…</MenuItem>
+      {/if}
     {/if}
   </MenuContent>
 </Menu>
 
 <Modal
-  open={flagging !== null}
-  title="Flag for attention"
+  open={asking !== null}
+  title={asking ? `Ask ${asking.to}` : 'Ask'}
   width={440}
   onClose={() => {
-    if (!flagSaving) flagging = null
+    if (!askSaving) asking = null
   }}
 >
-  <div class="flag-dialog">
-    <p class="flag-context">{flagging?.issue.title ?? ''}</p>
-    <label class="flag-field">
-      <span>What does it need? <small>(optional, one line)</small></span>
+  <div class="ask-dialog">
+    <p class="ask-context">{asking?.issue.title ?? ''}</p>
+    <label class="ask-field">
+      <span>What do you need?</span>
       <input
-        aria-label="What does it need?"
-        bind:value={flagReason}
-        disabled={flagSaving}
-        maxlength="200"
-        placeholder="e.g. Pick between the two designs"
+        bind:value={askMessage}
+        disabled={askSaving}
+        maxlength="1024"
+        placeholder="e.g. Which of the two designs should ship?"
         onkeydown={(event) => {
           if (event.key === 'Enter') {
             event.preventDefault()
-            void submitFlag()
+            void submitAsk()
           }
         }}
       />
     </label>
+    <p class="ask-hint">
+      Sent as a <code>kata notify</code> request; it shows in their inbox until they clear it.
+    </p>
   </div>
   {#snippet footer()}
     <Button
       size="sm"
       label="Cancel"
-      disabled={flagSaving}
+      disabled={askSaving}
       onclick={() => {
-        flagging = null
+        asking = null
       }}
     />
     <Button
       size="sm"
       tone="info"
       surface="solid"
-      label={flagSaving ? 'Flagging…' : 'Flag'}
-      ariaLabel="Flag for attention"
-      disabled={flagSaving}
-      onclick={() => void submitFlag()}
+      label={askSaving ? 'Sending…' : 'Send'}
+      ariaLabel="Send request"
+      disabled={askSaving || !askMessage.trim()}
+      onclick={() => void submitAsk()}
     />
   {/snippet}
 </Modal>
@@ -1121,11 +1158,6 @@
   }
 
   .card-attention.attention-stuck,
-  .card-attention.attention-blocked {
-    background: color-mix(in srgb, var(--accent-red) 14%, transparent);
-    color: color-mix(in srgb, var(--accent-red) 75%, var(--text-primary));
-  }
-
   .card-attention.attention-request {
     background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
     color: color-mix(in srgb, var(--accent-blue) 75%, var(--text-primary));
@@ -1265,7 +1297,12 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .meta.blocked,
+  /* Not ready yet, but nobody's fault: readable, not alarming. */
+  .meta.waiting,
+  .meta.parked {
+    color: var(--text-secondary);
+  }
+
   .meta.overdue {
     color: var(--accent-red);
   }
@@ -1383,29 +1420,31 @@
     }
   }
 
-  .flag-dialog {
+  .ask-dialog {
     display: grid;
     gap: var(--space-4);
   }
 
-  .flag-context {
+  .ask-context {
     margin: 0;
     color: var(--text-primary);
     font-weight: var(--font-weight-semibold);
   }
 
-  .flag-field {
+  .ask-field {
     display: grid;
     gap: var(--space-2);
     color: var(--text-muted);
     font-size: var(--font-size-xs);
   }
 
-  .flag-field small {
+  .ask-hint {
+    margin: 0;
+    color: var(--text-muted);
     font-size: var(--font-size-xs);
   }
 
-  .flag-field input {
+  .ask-field input {
     height: 32px;
     padding: 0 9px;
     border: 1px solid var(--border-default);
@@ -1416,7 +1455,7 @@
     font-size: var(--font-size-sm);
   }
 
-  .flag-field input:focus {
+  .ask-field input:focus {
     outline: 2px solid var(--focus-ring);
     outline-offset: 1px;
   }

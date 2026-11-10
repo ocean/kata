@@ -6,6 +6,7 @@
 
   import { commentRetryIdentity } from './lib/kata/commentRetry'
   import type { KataCommentReplyIntent, KataTaskSummary } from './lib/kata/types'
+  import { webActor } from './lib/kata/attention'
   import { defaultDoneLimit, type BoardMovePlan } from './lib/kata/board'
   import AppShell from './components/AppShell.svelte'
   import KataDaemonSwitcher from './components/KataDaemonSwitcher.svelte'
@@ -30,6 +31,7 @@
     initProject,
     listTokens,
     moveIssue as moveIssueRequest,
+    notifyIssue,
     patchIssueMetadata,
     patchProjectMetadata,
     patchRecurrence as patchRecurrenceRequest,
@@ -97,7 +99,7 @@
 
   type ShellMode = 'loading' | 'launch' | 'login' | 'route-error' | 'ready'
   type AppRoute = Exclude<KataRoute, { kind: 'route-error' }>
-  const requestActor = 'kata-web'
+  const requestActor = webActor
   const routePath = applicationRoutePath()
   const mountedApplication = currentApplicationBaseURL().pathname !== '/'
 
@@ -862,14 +864,9 @@
   }
 
   // Board cards act on any issue in the collection, not only the selected one.
-  // Board cards act on any issue in the collection, not only the selected one.
-  // A move reopens first, so later writes act on an open issue, then changes
+  // A move reopens first, so later writes act on an open issue, then clears
   // attention, then takes or releases ownership.
-  async function moveBoardIssue(
-    issue: KataTaskSummary,
-    plan: BoardMovePlan,
-    reason?: string,
-  ): Promise<boolean> {
+  async function moveBoardIssue(issue: KataTaskSummary, plan: BoardMovePlan): Promise<boolean> {
     const target = { projectId: issue.project_id, ref: issue.uid }
     const identityPolicy = authority?.snapshot?.capabilities.actor_policy === 'identity'
     const patch = (metadata: Record<string, string | null>) =>
@@ -898,13 +895,6 @@
         if (!removed) return false
       }
     }
-    if (plan.flagAttention) {
-      const flagged = await patch({
-        'work.attention': 'needs-human',
-        'work.attention_msg': reason ?? null,
-      })
-      if (!flagged) return false
-    }
     if (plan.claim) {
       const claimed = await runMutation({}, (context) =>
         claimIssueRequest(target, context.body({}, requestActor), { headers: context.headers }),
@@ -918,6 +908,17 @@
       if (!released) return false
     }
     return true
+  }
+
+  // The board's "Ask…": the same request `kata notify <ref> --to <to>` sends.
+  function askBoardIssue(issue: KataTaskSummary, to: string, message: string): Promise<boolean> {
+    return runMutation({ draft: message }, (context) =>
+      notifyIssue(
+        { projectId: String(issue.project_id), ref: issue.uid },
+        context.body({ to, message }, requestActor),
+        { headers: context.headers },
+      ),
+    )
   }
 
   function completeBoardIssue(
@@ -1447,6 +1448,7 @@
         onDeleteRecurrence={deleteRecurrence}
         onMoveBoardIssue={moveBoardIssue}
         onCompleteBoardIssue={completeBoardIssue}
+        onAskBoardIssue={askBoardIssue}
         onShowMoreBoardDone={showMoreBoardDone}
         onCreateBoardIssue={createBoardIssue}
       />

@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  askRecipient,
   boardColumnTitles,
   buildBoard,
+  cardMarkers,
   columnFor,
   defaultDoneLimit,
   isEpic,
+  moveTargets,
   planBoardMove,
 } from './board'
 import type { KataTaskSummary } from './types'
@@ -35,45 +38,54 @@ function issue(uid: string, overrides: Partial<KataTaskSummary> = {}): KataTaskS
 
 describe('columnFor', () => {
   it('puts an unclaimed open issue in Open and a closed one in Done', () => {
-    expect(columnFor(issue('a'), now)).toBe('open')
-    expect(columnFor(issue('b', { status: 'closed' }), now)).toBe('done')
+    expect(columnFor(issue('a'), { now })).toBe('open')
+    expect(columnFor(issue('b', { status: 'closed' }), { now })).toBe('done')
   })
 
   it('puts an owned open issue in In progress until its claim expires', () => {
-    expect(columnFor(issue('a', { owner: 'agent-a' }), now)).toBe('in-progress')
+    expect(columnFor(issue('a', { owner: 'agent-a' }), { now })).toBe('in-progress')
     expect(
-      columnFor(
-        issue('b', { owner: 'agent-a', assignment_expires_on: '2026-11-10T13:00:00Z' }),
+      columnFor(issue('b', { owner: 'agent-a', assignment_expires_on: '2026-11-10T13:00:00Z' }), {
         now,
-      ),
+      }),
     ).toBe('in-progress')
     expect(
-      columnFor(
-        issue('c', { owner: 'agent-a', assignment_expires_on: '2026-11-10T11:00:00Z' }),
+      columnFor(issue('c', { owner: 'agent-a', assignment_expires_on: '2026-11-10T11:00:00Z' }), {
         now,
-      ),
+      }),
     ).toBe('open')
   })
 
-  it('puts anything waiting on a human or on another issue in Needs attention', () => {
+  it('puts anything waiting on a human in Needs attention', () => {
     expect(
-      columnFor(issue('a', { owner: 'agent-a', metadata: { 'work.attention': 'stuck' } }), now),
+      columnFor(issue('a', { owner: 'agent-a', metadata: { 'work.attention': 'stuck' } }), { now }),
     ).toBe('attention')
-    expect(columnFor(issue('b', { labels: ['needs-review'] }), now)).toBe('attention')
-    expect(
-      columnFor(
-        issue('c', {
-          open_blocked_by: [{ uid: 'u-x', short_id: 'x', qualified_id: 'example-project#x' }],
-        }),
-        now,
-      ),
-    ).toBe('attention')
-    expect(columnFor(issue('d', { metadata: { 'work.attention': 'ok' } }), now)).toBe('open')
+    expect(columnFor(issue('b', { labels: ['needs-review'] }), { now })).toBe('attention')
+    expect(columnFor(issue('d', { metadata: { 'work.attention': 'ok' } }), { now })).toBe('open')
+  })
+
+  it('leaves work waiting on another issue in its own state, as kata ready does', () => {
+    const blocker = [{ uid: 'u-x', short_id: 'x', qualified_id: 'example-project#x' }]
+    expect(columnFor(issue('a', { open_blocked_by: blocker }), { now })).toBe('open')
+    expect(columnFor(issue('b', { owner: 'agent-a', open_blocked_by: blocker }), { now })).toBe(
+      'in-progress',
+    )
+  })
+
+  it("counts only requests in the viewer's inbox when the viewer has one", () => {
+    const asked = issue('a', {
+      metadata: { 'notify.Y29vcmRpbmF0b3I': { from: 'agent-a', message: 'Decide' } },
+    })
+    expect(columnFor(asked, { now })).toBe('attention')
+    expect(columnFor(asked, { now, viewer: { actor: 'reviewer', inbox: 'reviewer' } })).toBe('open')
+    expect(columnFor(asked, { now, viewer: { actor: 'coordinator', inbox: 'coordinator' } })).toBe(
+      'attention',
+    )
   })
 
   it('keeps a closed issue in Done whatever signals it still carries', () => {
     expect(
-      columnFor(issue('a', { status: 'closed', metadata: { 'work.attention': 'stuck' } }), now),
+      columnFor(issue('a', { status: 'closed', metadata: { 'work.attention': 'stuck' } }), { now }),
     ).toBe('done')
   })
 })
@@ -160,17 +172,30 @@ describe('buildBoard', () => {
 
 describe('planBoardMove', () => {
   it('claims an unowned card moved to In progress, and releases it moved back to Open', () => {
-    expect(planBoardMove(issue('a'), 'in-progress', now)).toEqual({ claim: true })
-    expect(planBoardMove(issue('a', { owner: 'agent-a' }), 'open', now)).toEqual({ release: true })
-  })
-
-  it('asks for a reason before flagging a card for attention', () => {
-    expect(planBoardMove(issue('a', { owner: 'agent-a' }), 'attention', now)).toEqual({
-      flagAttention: true,
+    expect(planBoardMove(issue('a'), 'in-progress', { now })).toEqual({ claim: true })
+    expect(planBoardMove(issue('a', { owner: 'agent-a' }), 'open', { now })).toEqual({
+      release: true,
     })
   })
 
-  it('clears every attention signal when a card leaves Needs attention', () => {
+  it('lets a blocked card be claimed, because dependencies only filter the ready queue', () => {
+    const blocked = issue('a', {
+      open_blocked_by: [{ uid: 'u-x', short_id: 'x', qualified_id: 'example-project#x' }],
+    })
+    expect(planBoardMove(blocked, 'in-progress', { now })).toEqual({ claim: true })
+  })
+
+  it('never moves a card into Needs attention, which only the waiting party can raise', () => {
+    expect(planBoardMove(issue('a', { owner: 'agent-a' }), 'attention', { now })).toBeUndefined()
+    expect(moveTargets(issue('a'), { now })).toEqual(['in-progress', 'done'])
+    expect(moveTargets(issue('b', { labels: ['needs-review'] }), { now })).toEqual([
+      'open',
+      'in-progress',
+      'done',
+    ])
+  })
+
+  it('clears the signals that asked for a human when a card leaves Needs attention', () => {
     const waiting = issue('a', {
       owner: 'agent-a',
       labels: ['needs-review', 'bug'],
@@ -178,10 +203,11 @@ describe('planBoardMove', () => {
         'work.attention': 'needs-human',
         'work.attention_msg': 'Pick one',
         'notify.Y29vcmRpbmF0b3I': { from: 'agent-a', message: 'Decide' },
+        'notify.cmV2aWV3ZXI': { from: 'agent-a', message: 'latest: reply c:abc123', kind: 'reply' },
         other: 'kept',
       },
     })
-    expect(planBoardMove(waiting, 'in-progress', now)).toEqual({
+    expect(planBoardMove(waiting, 'in-progress', { now })).toEqual({
       clearAttention: {
         metadata: {
           'work.attention': 'ok',
@@ -191,7 +217,7 @@ describe('planBoardMove', () => {
         removeLabels: ['needs-review'],
       },
     })
-    expect(planBoardMove(waiting, 'open', now)).toEqual({
+    expect(planBoardMove(waiting, 'open', { now })).toEqual({
       clearAttention: {
         metadata: {
           'work.attention': null,
@@ -204,39 +230,77 @@ describe('planBoardMove', () => {
     })
   })
 
-  it('claims an unowned card that leaves Needs attention for In progress', () => {
-    expect(planBoardMove(issue('a', { labels: ['needs-review'] }), 'in-progress', now)).toEqual({
-      clearAttention: { metadata: {}, removeLabels: ['needs-review'] },
+  it("clears only the viewer's own requests when the viewer has an inbox", () => {
+    const asked = issue('a', {
+      labels: ['needs-review'],
+      metadata: {
+        'notify.Y29vcmRpbmF0b3I': { from: 'agent-a', message: 'Decide' },
+        'notify.cmV2aWV3ZXI': { from: 'agent-a', message: 'Check' },
+      },
+    })
+    expect(
+      planBoardMove(asked, 'in-progress', {
+        now,
+        viewer: { actor: 'reviewer', inbox: 'reviewer' },
+      }),
+    ).toEqual({
+      clearAttention: { metadata: { 'notify.cmV2aWV3ZXI': null }, removeLabels: ['needs-review'] },
       claim: true,
     })
-  })
-
-  it('refuses to move a card that is only blocked by another open issue', () => {
-    const blocked = issue('a', {
-      open_blocked_by: [{ uid: 'u-x', short_id: 'x', qualified_id: 'example-project#x' }],
-    })
-    expect(planBoardMove(blocked, 'open', now)).toEqual({ blockedBy: ['x'] })
-    expect(planBoardMove(blocked, 'in-progress', now)).toEqual({ blockedBy: ['x'] })
-    expect(planBoardMove(blocked, 'done', now)).toEqual({ close: true })
   })
 
   it('closes through the completion form and reopens into the target state', () => {
-    expect(planBoardMove(issue('a', { owner: 'agent-a' }), 'done', now)).toEqual({ close: true })
+    expect(planBoardMove(issue('a', { owner: 'agent-a' }), 'done', { now })).toEqual({
+      close: true,
+    })
     const closed = issue('b', { status: 'closed', owner: 'agent-a' })
-    expect(planBoardMove(closed, 'open', now)).toEqual({ reopen: true, release: true })
-    expect(planBoardMove(closed, 'in-progress', now)).toEqual({ reopen: true })
-    expect(planBoardMove(issue('c', { status: 'closed' }), 'in-progress', now)).toEqual({
+    expect(planBoardMove(closed, 'open', { now })).toEqual({ reopen: true, release: true })
+    expect(planBoardMove(closed, 'in-progress', { now })).toEqual({ reopen: true })
+    expect(planBoardMove(issue('c', { status: 'closed' }), 'in-progress', { now })).toEqual({
       reopen: true,
       claim: true,
-    })
-    expect(planBoardMove(issue('d', { status: 'closed' }), 'attention', now)).toEqual({
-      reopen: true,
-      flagAttention: true,
     })
   })
 
   it('does nothing when the card is already in the target column', () => {
-    expect(planBoardMove(issue('a'), 'open', now)).toBeUndefined()
-    expect(planBoardMove(issue('b', { status: 'closed' }), 'done', now)).toBeUndefined()
+    expect(planBoardMove(issue('a'), 'open', { now })).toBeUndefined()
+    expect(planBoardMove(issue('b', { status: 'closed' }), 'done', { now })).toBeUndefined()
+  })
+})
+
+describe('cardMarkers', () => {
+  it('names the open issues a card waits on', () => {
+    expect(
+      cardMarkers(
+        issue('a', {
+          open_blocked_by: [
+            { uid: 'u-x', short_id: 'x', qualified_id: 'example-project#x' },
+            { uid: 'u-y', short_id: 'y', qualified_id: 'other#y' },
+          ],
+        }),
+        '2026-11-10',
+      ),
+    ).toEqual({ waitingOn: ['x', 'other#y'] })
+  })
+
+  it('marks work parked by a future schedule or someday, which kata next skips', () => {
+    expect(cardMarkers(issue('a', { scheduled_on_date: '2026-11-20' }), '2026-11-10')).toEqual({
+      waitingOn: [],
+      parked: { kind: 'scheduled', date: '2026-11-20' },
+    })
+    expect(cardMarkers(issue('b', { scheduled_on_date: '2026-11-10' }), '2026-11-10')).toEqual({
+      waitingOn: [],
+    })
+    expect(cardMarkers(issue('c', { metadata: { someday: true } }), '2026-11-10')).toEqual({
+      waitingOn: [],
+      parked: { kind: 'someday' },
+    })
+  })
+})
+
+describe('askRecipient', () => {
+  it('asks the owner, or the author when nobody owns the issue, like kata reminders', () => {
+    expect(askRecipient(issue('a', { owner: 'agent-b' }))).toBe('agent-b')
+    expect(askRecipient(issue('b'))).toBe('agent-a')
   })
 })

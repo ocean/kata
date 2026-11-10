@@ -1,7 +1,7 @@
 ---
 title: Web UI
 description: Browse and manage Kata projects and issues in the daemon-served browser application.
-last_edited: 2026-11-08
+last_edited: 2026-11-10
 ---
 
 # Web UI
@@ -69,8 +69,12 @@ The sidebar lists **Inbox**, **Needs attention**, **Today**, **Delegated**, and
   for, grouped by urgency:
   - **Stuck**: an agent set `work.attention` to `stuck`.
   - **Needs a human**: an agent set `work.attention` to `needs-human`.
-  - **Requests**: a `kata notify` request, to anyone, including the
-    reached-date requests the daemon raises for owners.
+  - **Requests**: a `kata notify` request, including the reached-date
+    requests the daemon raises for owners. A browser signed in with an account
+    shows requests to that account, like `kata inbox --for <account>`; the
+    owner-local browser has no account and shows requests to anyone. Requests
+    you sent and comment-reply reports, which tell an agent that someone
+    answered its comment, are left out.
   - **Needs review**: the task carries the `needs-review` label, which the
     default agent contract asks agents to add when they stop before the work is
     done.
@@ -114,11 +118,10 @@ side-by-side detail layouts.
 
 Switch the header's **List**/**Board** control to **Board** to see a project, or
 all open work across projects, as columns of cards. Each card shows its ID,
-priority, title, owner, open blocker count, subtask progress, deadline, and its
-labels. The layout stays in the URL as `layout=board`, so a board is
-bookmarkable. Choosing a project in the sidebar
-keeps the board; choosing Inbox, Today, Delegated, or Scheduled returns to the
-list.
+priority, title, owner, subtask progress, deadline, and labels. The layout
+stays in the URL as `layout=board`, so a board is bookmarkable. Choosing a
+project in the sidebar keeps the board; choosing Inbox, Today, Delegated, or
+Scheduled returns to the list.
 
 The board has four columns, and each one shows a state Kata already records.
 It adds no workflow vocabulary of its own, so there is nothing to configure:
@@ -127,16 +130,29 @@ It adds no workflow vocabulary of its own, so there is nothing to configure:
 | --- | --- | --- |
 | Open | Open issues nobody has claimed, or whose claim has expired | Releases the owner |
 | In progress | Open issues with an owner whose claim has not expired | Claims the issue for you if nobody owns it |
-| Needs attention | Open issues an agent marked `stuck` or `needs-human`, issues with `kata notify` requests or the `needs-review` label, and issues blocked by another open issue | Asks **What does it need?**, then sets `work.attention` to `needs-human` with your answer as the message |
+| Needs attention | Open issues waiting on a human: an agent's `stuck` or `needs-human` signal, a `kata notify` request, or the `needs-review` label, as in the [Needs attention](#navigate-projects-and-collections) view | Not a move target; see below |
 | Done | Closed issues, newest first; the daemon sends 30 at a time and **Show more** loads the next 30 | Opens the **Complete task** form, which asks for a reason, note, and evidence before closing |
 
 A card in Needs attention shows a badge and the reason, such as **Needs you**
-with the agent's message, or **Blocked** with the issues it waits on. Moving it
-out clears what put it there: `work.attention` becomes `ok` (In progress) or is
-removed (Open), `work.attention_msg` and `notify.*` requests are removed, and
-the `needs-review` label comes off. A card that is only blocked by other issues
-does not move; the banner names the blockers, and the card leaves on its own
-when they close. Moving a card out of Done reopens it first.
+with the agent's message. Moving it out is how you say you've handled it, and
+clears what put it there, as
+[gated workflows](../workflows/gated-workflows.md#attention-and-reminders)
+describe: `work.attention` becomes `ok` (In progress) or is removed (Open),
+`work.attention_msg` is removed, the requests you were reading are cleared as
+`kata notify --clear` would, and the `needs-review` label comes off. Moving a
+card out of Done reopens it first.
+
+No move puts a card into Needs attention. Attention is the working agent's
+signal, and the [orchestration convention](../operations/agent-orchestration.md)
+has one writer for it. To ask for something instead, choose **Ask…** from the
+card's actions menu. It sends a `kata notify` request to the owner, or to the
+author when nobody owns the card, the same recipient Kata uses for date
+reminders. The card stays where it is.
+
+Blocked and parked work keeps its column, because `kata ready` only filters it
+and does not change who owns it. A card blocked by open issues shows
+**Waiting on** with their IDs, and a card with a future schedule or `someday`
+shows **Starts** with the date, or **Someday**. You can still claim it.
 
 Cards are ordered by priority. Among cards of the same priority, the one with
 the most comments comes first, then the most recently updated, so busy issues
@@ -153,8 +169,8 @@ subtasks in the same column are listed directly under it, indented one step per
 level. A subtask whose epic sits in another column shows that epic's ID beside
 its own. Subtasks still move on their own.
 
-Move a card by dragging it, from its **Move to…** menu, or by focusing it and
-pressing **Alt+←** or **Alt+→**. Arrow keys move focus between cards and
+Move a card by dragging it, from its actions menu (**…**), or by focusing it
+and pressing **Alt+←** or **Alt+→**, which skip Needs attention. Arrow keys move focus between cards and
 columns. A moved card flashes briefly where it lands, and a banner offers
 **Undo** for ten seconds when the move only claimed or released the issue;
 **Ctrl+Z** (**⌘Z** on macOS) undoes that move too, except inside a text field.

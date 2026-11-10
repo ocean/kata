@@ -35,6 +35,7 @@
     projectKataWorkspaceView,
   } from '../lib/kata/authority'
   import { type BoardColumnID, type BoardMovePlan } from '../lib/kata/board'
+  import { attentionViewer } from '../lib/kata/attention'
   import { createKataLinkFilters } from '../lib/kata/linkFilters'
   import { normalizeKataUISnapshot, withPendingSelection } from '../lib/kata/projection'
   import { localDateString } from '../lib/kata/dates'
@@ -144,7 +145,11 @@
     ) => Promise<void>
     onDeleteRecurrence: (recurrence: import('../lib/kata/types').KataRecurrence) => Promise<boolean>
     onMoveBoardIssue?:
-      | ((issue: KataTaskSummary, plan: BoardMovePlan, reason?: string) => Promise<boolean>)
+      | ((issue: KataTaskSummary, plan: BoardMovePlan) => Promise<boolean>)
+      | undefined
+    /** Sends a `kata notify` request from a board card. */
+    onAskBoardIssue?:
+      | ((issue: KataTaskSummary, to: string, message: string) => Promise<boolean>)
       | undefined
     onCompleteBoardIssue?:
       | ((issue: KataTaskSummary, request: KataTaskCloseRequest) => Promise<boolean>)
@@ -209,6 +214,7 @@
     onDeleteRecurrence,
     onMoveBoardIssue = async () => false,
     onCompleteBoardIssue = async () => false,
+    onAskBoardIssue = undefined,
     onShowMoreBoardDone = undefined,
     onCreateBoardIssue = undefined,
   }: Props = $props()
@@ -294,6 +300,7 @@
   const mediumScreen = new MediaQuery(MEDIA.medium)
   let linkFilters = $state(createKataLinkFilters('all'))
   let navigationGeneration = $state(0)
+  let viewer = $derived(attentionViewer(snapshot.capabilities.account))
   let credentialRoute = $derived(route.view === 'credentials')
   let settingsRoute = $derived(route.view === 'settings')
   let daemonRoute = $derived(credentialRoute || settingsRoute)
@@ -338,6 +345,7 @@
       snapshot: projection,
       issues: projection.issues,
       today,
+      viewer,
     }),
   )
   let pendingQuery = $state('')
@@ -1002,6 +1010,7 @@
         onSubmitSearch={submitSearch}
       />
       <IssueCollection
+        {viewer}
         now={connectionNow}
         resultsKey={JSON.stringify([route.projectUID ?? null, route.filters])}
         {navigationGeneration}
@@ -1078,6 +1087,8 @@
       onOpenIssue={(issue) => selectIssue(issue.uid)}
       onMoveIssue={onMoveBoardIssue}
       onCompleteIssue={onCompleteBoardIssue}
+      onAskIssue={onAskBoardIssue}
+      {viewer}
       doneTotal={snapshot.closed_total}
       onShowMoreDone={onShowMoreBoardDone}
       compact={preferences.boardCompact}

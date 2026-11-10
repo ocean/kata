@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { attentionReasons, buildAttentionGroups, needsReviewLabel } from './attention'
+import { attentionReasons, buildAttentionGroups, needsReviewLabel, requestKeys } from './attention'
 import type { KataTaskSummary } from './types'
 
 function task(uid: string, overrides: Partial<KataTaskSummary> = {}): KataTaskSummary {
@@ -68,9 +68,65 @@ describe('attentionReasons', () => {
         }),
       ),
     ).toEqual([
-      { kind: 'request', text: 'Request to coordinator from agent-a: Please decide on the schema' },
-      { kind: 'request', text: 'Request to lead/reviewer-1 from agent-b/tester: Check the repro' },
+      {
+        kind: 'request',
+        key: coordinatorKey,
+        text: 'Request to coordinator from agent-a: Please decide on the schema',
+      },
+      {
+        kind: 'request',
+        key: reviewerKey,
+        text: 'Request to lead/reviewer-1 from agent-b/tester: Check the repro',
+      },
     ])
+  })
+
+  it('does not count reply reports, which are agents answering each other', () => {
+    expect(
+      attentionReasons(
+        task('a', {
+          metadata: {
+            [coordinatorKey]: {
+              from: 'agent-b',
+              message: 'latest: confirm c:xbzxrq by agent-b',
+              re: '01J000000000000000000XBZXRQ',
+              kind: 'confirm',
+            },
+            [reviewerKey]: {
+              from: 'system',
+              message: 'Deadline reached: 2026-11-04',
+              kind: 'deadline_on',
+            },
+          },
+        }),
+      ),
+    ).toEqual([
+      {
+        kind: 'request',
+        key: reviewerKey,
+        text: 'Request to lead/reviewer-1 from system: Deadline reached: 2026-11-04',
+      },
+    ])
+  })
+
+  it('reads only the viewer inbox when the viewer has one, and never their own requests', () => {
+    const issue = task('a', {
+      metadata: {
+        [coordinatorKey]: { from: 'agent-a', message: 'Please decide' },
+        [reviewerKey]: { from: 'coordinator', message: 'Please check the update' },
+      },
+    })
+
+    expect(attentionReasons(issue, { actor: 'coordinator', inbox: 'coordinator' })).toEqual([
+      {
+        kind: 'request',
+        key: coordinatorKey,
+        text: 'Request to coordinator from agent-a: Please decide',
+      },
+    ])
+    // Without an inbox (the owner-local browser) every request counts except the viewer's own.
+    expect(requestKeys(issue, { actor: 'coordinator' })).toEqual([coordinatorKey])
+    expect(requestKeys(issue, { actor: 'kata-web' })).toEqual([coordinatorKey, reviewerKey])
   })
 
   it('skips malformed requests', () => {

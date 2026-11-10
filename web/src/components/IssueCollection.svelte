@@ -1,5 +1,9 @@
 <script lang="ts">
-  import { attentionBadgeLabels, attentionReasons } from '../lib/kata/attention'
+  import {
+    attentionBadgeLabels,
+    attentionReasons,
+    type AttentionViewer,
+  } from '../lib/kata/attention'
   /* eslint-disable svelte/prefer-svelte-reactivity */
   import { onDestroy, tick, untrack, type Snippet } from 'svelte'
   import ChevronDownIcon from '@lucide/svelte/icons/chevron-down'
@@ -55,6 +59,8 @@
     onOpenGraph?: ((issue: KataTaskSummary) => void) | undefined
     /** Replaces the bare `No tasks` line when the list has no rows. */
     empty?: Snippet | undefined
+    /** Whose attention the badges read; see AttentionViewer. */
+    viewer?: AttentionViewer | undefined
   }
 
   const EMPTY_READY_ISSUE_UIDS: ReadonlySet<string> = new Set()
@@ -76,6 +82,7 @@
     onSelect,
     onOpenGraph = undefined,
     empty = undefined,
+    viewer = undefined,
   }: Props = $props()
 
   const SORT_STORAGE_KEY = 'kata:issue-sort/v1'
@@ -1093,7 +1100,7 @@
   {@const expandable = hasChildren(issue)}
   {@const isExpanded = expanded[issue.uid] === true}
   {@const titleId = `kata-issue-title-${issue.uid}`}
-  {@const attention = attentionReasons(issue)}
+  {@const attention = attentionReasons(issue, viewer)}
   <div class="row-frame" style:--task-depth={String(depth)}>
     <button
       class="row issue-row"

@@ -149,6 +149,23 @@ describe('IssueBoard columns', () => {
       title: 'Review the docs',
       labels: ['needs-review'],
     })
+    renderBoard({ issues: [waiting, review] })
+
+    const waitingCard = cardButton('Choose a schema').closest('li')!
+    expect(within(waitingCard).getByText('Needs you')).toBeTruthy()
+    expect(within(waitingCard).getByText('Needs a human: Pick one of two designs')).toBeTruthy()
+    const reviewCard = cardButton('Review the docs').closest('li')!
+    expect(within(reviewCard).getByText('Review')).toBeTruthy()
+    expect(within(reviewCard).queryByText('needs-review')).toBeNull()
+    expect(
+      screen.getByRole('button', {
+        name: 'Choose a schema',
+        description: /Pick one of two designs/,
+      }),
+    ).toBeTruthy()
+  })
+
+  it('keeps blocked and parked work in its own column and says why it is not ready', () => {
     const blocked = task({
       id: 6,
       uid: 'u-blocked',
@@ -157,23 +174,37 @@ describe('IssueBoard columns', () => {
         { uid: 'u-review', short_id: 'rev1', qualified_id: 'example-project#rev1' },
       ],
     })
-    renderBoard({ issues: [waiting, review, blocked] })
+    const someday = task({
+      id: 7,
+      uid: 'u-someday',
+      title: 'Try a dark theme',
+      owner: 'agent-a',
+      metadata: { someday: true },
+    })
+    renderBoard({ issues: [blocked, someday] })
 
-    const waitingCard = cardButton('Choose a schema').closest('li')!
-    expect(within(waitingCard).getByText('Needs you')).toBeTruthy()
-    expect(within(waitingCard).getByText('Needs a human: Pick one of two designs')).toBeTruthy()
-    const reviewCard = cardButton('Review the docs').closest('li')!
-    expect(within(reviewCard).getByText('Review')).toBeTruthy()
-    expect(within(reviewCard).queryByText('needs-review')).toBeNull()
-    const blockedCard = cardButton('Ship after review').closest('li')!
-    expect(within(blockedCard).getByText('Blocked')).toBeTruthy()
-    expect(within(blockedCard).getByText('Waiting on rev1')).toBeTruthy()
     expect(
-      screen.getByRole('button', {
-        name: 'Choose a schema',
-        description: /Pick one of two designs/,
-      }),
+      within(within(column('Open')).getByRole('listitem')).getByText('Waiting on rev1'),
     ).toBeTruthy()
+    expect(
+      within(within(column('In progress')).getByRole('listitem')).getByText('Someday'),
+    ).toBeTruthy()
+    expect(column('Needs attention').getAttribute('aria-label')).toBe('Needs attention, 0 cards')
+  })
+
+  it("shows only requests in the viewer's inbox", () => {
+    const asked = task({
+      id: 8,
+      uid: 'u-asked',
+      title: 'Pick a release date',
+      metadata: { 'notify.Y29vcmRpbmF0b3I': { from: 'agent-a', message: 'Pick a date' } },
+    })
+    renderBoard({ issues: [asked], viewer: { actor: 'reviewer', inbox: 'reviewer' } })
+    expect(within(column('Open')).getByText('Pick a release date')).toBeTruthy()
+    cleanup()
+
+    renderBoard({ issues: [asked], viewer: { actor: 'coordinator', inbox: 'coordinator' } })
+    expect(within(column('Needs attention')).getByText('Pick a release date')).toBeTruthy()
   })
 
   it('opens the issue when its card is clicked', async () => {
@@ -202,7 +233,7 @@ describe('IssueBoard moves', () => {
 
     await fireEvent.keyDown(cardButton('Triage inbox'), { key: 'ArrowRight', altKey: true })
 
-    expect(props.onMoveIssue).toHaveBeenCalledWith(triage, { claim: true }, undefined)
+    expect(props.onMoveIssue).toHaveBeenCalledWith(triage, { claim: true })
     await waitFor(() => expect(screen.getByText('Moved Triage inbox to In progress.')).toBeTruthy())
   })
 
@@ -211,7 +242,7 @@ describe('IssueBoard moves', () => {
 
     await fireEvent.keyDown(cardButton('Write the parser'), { key: 'ArrowLeft', altKey: true })
 
-    expect(props.onMoveIssue).toHaveBeenCalledWith(doing, { release: true }, undefined)
+    expect(props.onMoveIssue).toHaveBeenCalledWith(doing, { release: true })
   })
 
   it('keeps the card in its target column while the move is pending', async () => {
@@ -228,22 +259,34 @@ describe('IssueBoard moves', () => {
     expect(screen.getByText(/Could not move Triage inbox/)).toBeTruthy()
   })
 
-  it('asks for a reason before flagging a card for attention', async () => {
-    const props = renderBoard()
+  it('asks the owner from the card menu without moving the card', async () => {
+    const onAskIssue = vi.fn(async () => true)
+    const props = renderBoard({ onAskIssue })
 
-    await fireEvent.keyDown(cardButton('Write the parser'), { key: 'ArrowRight', altKey: true })
-    const dialog = screen.getByRole('dialog', { name: 'Flag for attention' })
-    expect(props.onMoveIssue).not.toHaveBeenCalled()
-    await fireEvent.input(within(dialog).getByRole('textbox', { name: 'What does it need?' }), {
-      target: { value: '  Needs a decision on the API  ' },
+    await fireEvent.click(screen.getByRole('button', { name: 'Actions for Write the parser' }))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Ask user-b…' }))
+    const dialog = screen.getByRole('dialog', { name: 'Ask user-b' })
+    const send = within(dialog).getByRole('button', { name: 'Send request' })
+    expect(send.hasAttribute('disabled')).toBe(true)
+    await fireEvent.input(within(dialog).getByRole('textbox', { name: 'What do you need?' }), {
+      target: { value: '  Which parser API should ship?  ' },
     })
-    await fireEvent.click(within(dialog).getByRole('button', { name: 'Flag for attention' }))
+    await fireEvent.click(send)
 
-    expect(props.onMoveIssue).toHaveBeenCalledWith(
-      doing,
-      { flagAttention: true },
-      'Needs a decision on the API',
-    )
+    expect(onAskIssue).toHaveBeenCalledWith(doing, 'user-b', 'Which parser API should ship?')
+    expect(props.onMoveIssue).not.toHaveBeenCalled()
+    expect(await screen.findByText('Asked user-b about Write the parser.')).toBeTruthy()
+    expect(within(column('In progress')).getByText('Write the parser')).toBeTruthy()
+  })
+
+  it('asks the author when nobody owns the card, and never offers to ask yourself', async () => {
+    renderBoard({ onAskIssue: vi.fn(async () => true), viewer: { actor: 'user-b' } })
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Actions for Triage inbox' }))
+    expect(screen.getByRole('menuitem', { name: 'Ask user-a…' })).toBeTruthy()
+    await fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+    await fireEvent.click(screen.getByRole('button', { name: 'Actions for Write the parser' }))
+    expect(screen.queryByRole('menuitem', { name: /^Ask/ })).toBeNull()
   })
 
   it('clears attention when a card leaves Needs attention for In progress', async () => {
@@ -251,35 +294,24 @@ describe('IssueBoard moves', () => {
 
     await fireEvent.keyDown(cardButton('Choose a schema'), { key: 'ArrowLeft', altKey: true })
 
-    expect(props.onMoveIssue).toHaveBeenCalledWith(
-      waiting,
-      {
-        clearAttention: {
-          metadata: { 'work.attention': 'ok', 'work.attention_msg': null },
-          removeLabels: [],
-        },
+    expect(props.onMoveIssue).toHaveBeenCalledWith(waiting, {
+      clearAttention: {
+        metadata: { 'work.attention': 'ok', 'work.attention_msg': null },
+        removeLabels: [],
       },
-      undefined,
-    )
+    })
   })
 
-  it('refuses to move a card that only waits on another open issue, and says why', async () => {
-    const blocked = task({
-      id: 6,
-      uid: 'u-blocked',
-      title: 'Ship after review',
-      open_blocked_by: [{ uid: 'u-x', short_id: 'rev1', qualified_id: 'example-project#rev1' }],
-    })
-    const props = renderBoard({ issues: [blocked] })
+  it('never moves a card into Needs attention: Alt+→ skips it and it takes no drops', async () => {
+    const props = renderBoard()
 
-    await fireEvent.keyDown(cardButton('Ship after review'), { key: 'ArrowLeft', altKey: true })
+    await fireEvent.keyDown(cardButton('Write the parser'), { key: 'ArrowRight', altKey: true })
+    expect(screen.getByRole('dialog', { name: 'Complete task' })).toBeTruthy()
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
+    await dragTo('Triage inbox', 'Needs attention', 'u-triage')
     expect(props.onMoveIssue).not.toHaveBeenCalled()
-    expect(
-      await screen.findByText(
-        'Ship after review is waiting on rev1. It moves on when that work closes.',
-      ),
-    ).toBeTruthy()
+    expect(within(column('Open')).getByText('Triage inbox')).toBeTruthy()
   })
 
   it('asks for a completion note before a card dropped on Done closes', async () => {
@@ -307,26 +339,22 @@ describe('IssueBoard moves', () => {
 
     await dragTo('Ship the release', 'In progress', 'u-shipped')
 
-    expect(props.onMoveIssue).toHaveBeenCalledWith(
-      shipped,
-      { reopen: true, claim: true },
-      undefined,
-    )
+    expect(props.onMoveIssue).toHaveBeenCalledWith(shipped, { reopen: true, claim: true })
   })
 
-  it('offers every other column from the card move menu', async () => {
-    const props = renderBoard()
+  it('offers the columns a card can move to, then Ask, from the card menu', async () => {
+    const props = renderBoard({ onAskIssue: vi.fn(async () => true) })
 
-    await fireEvent.click(screen.getByRole('button', { name: 'Move Triage inbox' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Actions for Triage inbox' }))
     const menu = screen.getByRole('menu')
     expect(
       within(menu)
         .getAllByRole('menuitem')
         .map((item) => item.textContent?.trim()),
-    ).toEqual(['In progress', 'Needs attention', 'Done'])
-    await fireEvent.click(within(menu).getByRole('menuitem', { name: 'In progress' }))
+    ).toEqual(['Move to In progress', 'Move to Done', 'Ask user-a…'])
+    await fireEvent.click(within(menu).getByRole('menuitem', { name: 'Move to In progress' }))
 
-    expect(props.onMoveIssue).toHaveBeenCalledWith(triage, { claim: true }, undefined)
+    expect(props.onMoveIssue).toHaveBeenCalledWith(triage, { claim: true })
   })
 
   it('does not move cards and says why when changes are blocked', async () => {
@@ -335,7 +363,7 @@ describe('IssueBoard moves', () => {
     await fireEvent.keyDown(cardButton('Triage inbox'), { key: 'ArrowRight', altKey: true })
 
     expect(props.onMoveIssue).not.toHaveBeenCalled()
-    expect(screen.queryByRole('button', { name: 'Move Triage inbox' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Actions for Triage inbox' })).toBeNull()
     expect(within(column('Open')).getByRole('listitem').getAttribute('draggable')).toBe('false')
     expect(screen.getByText('This credential is read-only.')).toBeTruthy()
   })
@@ -362,11 +390,9 @@ describe('IssueBoard after a move', () => {
     await fireEvent.click(await screen.findByRole('button', { name: 'Undo' }))
 
     expect(onMoveIssue).toHaveBeenCalledTimes(2)
-    expect(onMoveIssue).toHaveBeenLastCalledWith(
-      expect.objectContaining({ uid: 'u-triage' }),
-      { release: true },
-      undefined,
-    )
+    expect(onMoveIssue).toHaveBeenLastCalledWith(expect.objectContaining({ uid: 'u-triage' }), {
+      release: true,
+    })
   })
 
   it('undoes the last move with Ctrl+Z, but leaves Ctrl+Z in a text field alone', async () => {
@@ -381,11 +407,9 @@ describe('IssueBoard after a move', () => {
     await fireEvent.keyDown(cardButton('Write the parser'), { key: 'z', ctrlKey: true })
 
     expect(onMoveIssue).toHaveBeenCalledTimes(2)
-    expect(onMoveIssue).toHaveBeenLastCalledWith(
-      expect.objectContaining({ uid: 'u-doing' }),
-      { claim: true },
-      undefined,
-    )
+    expect(onMoveIssue).toHaveBeenLastCalledWith(expect.objectContaining({ uid: 'u-doing' }), {
+      claim: true,
+    })
     field.remove()
   })
 

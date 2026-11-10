@@ -3,15 +3,25 @@
 //
 //   Open             open, nobody has claimed it
 //   In progress      open and claimed (an owner whose claim has not expired)
-//   Needs attention  open and waiting on a human (work.attention, notify
-//                    requests, the needs-review label) or on another open issue
+//   Needs attention  open and waiting on a human: an agent's stuck or
+//                    needs-human signal, a notify request, or needs-review
 //   Done             closed
 //
-// Moving a card performs the matching Kata action: claim, release, flag or
-// clear attention, reopen, or close through the completion form.
+// Blocked and parked work keeps its state and carries a marker instead, as
+// `kata ready` filters it without changing who owns it. Moving a card performs
+// the matching Kata action: claim, release, clear what asked for a human,
+// reopen, or close through the completion form. Only the waiting party raises
+// attention, so no move puts a card into Needs attention.
 
-import { attentionReasons, needsReviewLabel } from './attention'
+import { attentionReasons, needsReviewLabel, requestKeys, type AttentionViewer } from './attention'
 import type { KataTaskSummary } from './types'
+import { scheduledDate } from './view'
+
+export interface BoardContext {
+  now?: Date
+  /** Whose attention the board reads; see AttentionViewer. */
+  viewer?: AttentionViewer | undefined
+}
 
 export const defaultDoneLimit = 30
 
@@ -55,34 +65,36 @@ export interface BoardMovePlan {
   claim?: true
   /** Release the current owner. */
   release?: true
-  /** Flag the issue needs-human; the board asks for a one-line reason first. */
-  flagAttention?: true
   /** Clear the signals that put the issue in Needs attention. */
   clearAttention?: {
     metadata: Record<string, string | null>
     removeLabels: string[]
   }
-  /** The move is refused: the card waits on these open issues. */
-  blockedBy?: string[]
 }
 
-export function columnFor(issue: KataTaskSummary, now: Date = new Date()): BoardColumnID {
+/** Why a card is not on the ready queue even though it is open. */
+export interface CardMarkers {
+  /** Open issues this one waits on, as short or qualified IDs. */
+  waitingOn: string[]
+  /** A future schedule or someday, both of which `kata next` skips. */
+  parked?: { kind: 'scheduled'; date: string } | { kind: 'someday' }
+}
+
+export function columnFor(issue: KataTaskSummary, context: BoardContext = {}): BoardColumnID {
   if (issue.status === 'closed') return 'done'
-  if (attentionReasons(issue).length > 0 || openBlockers(issue).length > 0) return 'attention'
-  return isClaimed(issue, now) ? 'in-progress' : 'open'
+  if (attentionReasons(issue, context.viewer).length > 0) return 'attention'
+  return isClaimed(issue, context.now ?? new Date()) ? 'in-progress' : 'open'
 }
 
 export function buildBoard<T extends KataTaskSummary>(
   issues: readonly T[],
-  options: {
-    now?: Date
+  options: BoardContext & {
     doneLimit?: number
     pending?: ReadonlyMap<string, BoardColumnID>
     /** Closed issues the server counted; Done then shows every closed issue given. */
     doneTotal?: number | undefined
   } = {},
 ): Board<T> {
-  const now = options.now ?? new Date()
   const columns = boardColumnOrder.map<BoardColumn<T>>((id) => ({
     id,
     title: boardColumnTitles[id],
@@ -92,7 +104,7 @@ export function buildBoard<T extends KataTaskSummary>(
   }))
   const byID = new Map(columns.map((column) => [column.id, column]))
   for (const issue of issues) {
-    const target = byID.get(options.pending?.get(issue.uid) ?? columnFor(issue, now))!
+    const target = byID.get(options.pending?.get(issue.uid) ?? columnFor(issue, options))!
     target.issues.push(issue)
   }
   for (const column of columns) {
@@ -113,37 +125,48 @@ export function buildBoard<T extends KataTaskSummary>(
 export function planBoardMove(
   issue: KataTaskSummary,
   target: BoardColumnID,
-  now: Date = new Date(),
+  context: BoardContext = {},
 ): BoardMovePlan | undefined {
-  const from = columnFor(issue, now)
-  if (from === target) return undefined
+  const from = columnFor(issue, context)
+  if (from === target || target === 'attention') return undefined
   if (target === 'done') return { close: true }
 
   const plan: BoardMovePlan = {}
   if (from === 'done') plan.reopen = true
-
-  if (from === 'attention' && target !== 'attention') {
-    const reasons = attentionReasons(issue)
-    const blockers = openBlockers(issue)
-    // A card waiting only on another issue moves on when that issue closes.
-    if (reasons.length === 0 && blockers.length > 0) return { blockedBy: blockers }
-    plan.clearAttention = clearSignals(issue, target)
-  }
-
-  const owned = isClaimed(issue, now)
-  if (target === 'attention') plan.flagAttention = true
-  else if (target === 'in-progress' && !owned) plan.claim = true
+  if (from === 'attention') plan.clearAttention = clearSignals(issue, target, context.viewer)
+  const owned = isClaimed(issue, context.now ?? new Date())
+  if (target === 'in-progress' && !owned) plan.claim = true
   else if (target === 'open' && issue.owner) plan.release = true
   return plan
+}
+
+/** The columns a card can move to, in board order. */
+export function moveTargets(issue: KataTaskSummary, context: BoardContext = {}): BoardColumnID[] {
+  return boardColumnOrder.filter((id) => planBoardMove(issue, id, context) !== undefined)
+}
+
+export function cardMarkers(issue: KataTaskSummary, today: string): CardMarkers {
+  const markers: CardMarkers = {
+    waitingOn: (issue.open_blocked_by ?? []).map((blocker) =>
+      blocker.qualified_id.startsWith(`${issue.project_name}#`)
+        ? blocker.short_id
+        : blocker.qualified_id,
+    ),
+  }
+  const scheduled = scheduledDate(issue)
+  if (scheduled && scheduled > today) markers.parked = { kind: 'scheduled', date: scheduled }
+  else if (issue.metadata.someday === true) markers.parked = { kind: 'someday' }
+  return markers
+}
+
+/** Who "Ask…" addresses: the owner, else the author, as kata's own reminders do. */
+export function askRecipient(issue: KataTaskSummary): string {
+  return issue.owner || issue.author
 }
 
 /** True when an issue has subtasks, which the board shows as an epic. */
 export function isEpic(issue: KataTaskSummary): boolean {
   return (issue.child_counts?.total ?? 0) > 0
-}
-
-export function openBlockers(issue: KataTaskSummary): string[] {
-  return (issue.open_blocked_by ?? []).map((blocker) => blocker.short_id)
 }
 
 function isClaimed(issue: KataTaskSummary, now: Date): boolean {
@@ -155,6 +178,7 @@ function isClaimed(issue: KataTaskSummary, now: Date): boolean {
 function clearSignals(
   issue: KataTaskSummary,
   target: BoardColumnID,
+  viewer: AttentionViewer | undefined,
 ): NonNullable<BoardMovePlan['clearAttention']> {
   const metadata: Record<string, string | null> = {}
   const attention = issue.metadata['work.attention']
@@ -163,9 +187,8 @@ function clearSignals(
     metadata['work.attention'] = target === 'in-progress' ? 'ok' : null
     metadata['work.attention_msg'] = null
   }
-  for (const key of Object.keys(issue.metadata)) {
-    if (key.startsWith('notify.')) metadata[key] = null
-  }
+  // Like `kata notify --clear`: only the requests this viewer is handling.
+  for (const key of requestKeys(issue, viewer)) metadata[key] = null
   return {
     metadata,
     removeLabels: (issue.labels ?? []).filter((label) => label === needsReviewLabel),

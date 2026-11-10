@@ -2388,6 +2388,57 @@ describe('App', () => {
     expect(new URL(writes[1]!.url).pathname).toBe(`${issuePath}/actions/claim`)
   })
 
+  it('asks the owner of a board card through a kata notify request', async () => {
+    history.replaceState(null, '', '/kata?scope=01J00000000000000000000002&layout=board#direct=1')
+    sessionStorage.setItem(
+      'kata.web.session.v1',
+      JSON.stringify({ session: 'tab-session', csrf: 'tab-csrf' }),
+    )
+    const accepted = snapshot()
+    Object.assign(accepted.collection![0]!, { owner: 'agent-a' })
+    const notifyPath = '/api/v1/projects/7/issues/01J00000000000000000000001/notifications'
+    const requests: Request[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = requestOf(input, init)
+        requests.push(request)
+        if (request.method === 'POST' && new URL(request.url).pathname === notifyPath) {
+          return new Response(JSON.stringify({ issue: accepted.collection![0], changed: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify(accepted), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', ETag: `"snapshot-${requests.length}"` },
+        })
+      }),
+    )
+
+    render(App)
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Actions for Example issue' }))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Ask agent-a…' }))
+    await fireEvent.input(screen.getByRole('textbox', { name: 'What do you need?' }), {
+      target: { value: 'Is the parser change ready for review?' },
+    })
+    await fireEvent.click(screen.getByRole('button', { name: 'Send request' }))
+
+    const notify = await waitFor(() => {
+      const found = requests.find(
+        (request) => request.method === 'POST' && new URL(request.url).pathname === notifyPath,
+      )
+      expect(found).toBeDefined()
+      return found!
+    })
+    // Identity-mode authority attributes the request itself, so no actor is sent.
+    expect(await notify.json()).toEqual({
+      to: 'agent-a',
+      message: 'Is the parser change ready for review?',
+    })
+  })
+
   it('changes the Inbox project from New task through one designation request', async () => {
     history.replaceState(null, '', '/kata#direct=1')
     sessionStorage.setItem(
