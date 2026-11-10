@@ -5,6 +5,7 @@ export const systemViews = [
   'today',
   'delegated',
   'scheduled',
+  'attention',
   'all-open',
   'logbook',
 ] as const

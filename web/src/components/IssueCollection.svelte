@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { attentionBadgeLabels, attentionReasons } from '../lib/kata/attention'
   /* eslint-disable svelte/prefer-svelte-reactivity */
   import { onDestroy, tick } from 'svelte'
   import ChevronDownIcon from '@lucide/svelte/icons/chevron-down'
@@ -214,8 +215,13 @@
   // Overdue/Today buckets) into one global list so the order isn't reset
   // per group. A single-group view (like Inbox) has nothing to collapse,
   // so keep its labeled region instead of dropping it to a bare list.
+  // Sorting by update flattens grouped views, except Needs attention, whose
+  // urgency groups are the point of the view.
   let shouldFlatten = $derived(
-    !isProjectScoped && sort.key === 'updated' && visibleGroups.length > 1,
+    !isProjectScoped &&
+      sort.key === 'updated' &&
+      visibleGroups.length > 1 &&
+      currentView.name !== 'attention',
   )
   let globalSortedIssues = $derived(
     shouldFlatten
@@ -921,7 +927,11 @@
       </div>
 
       {#if visibleRootIssues.length === 0}
-        <div class="empty">No tasks</div>
+        <div class="empty">
+          {currentView.name === 'attention'
+            ? 'Nothing needs your attention right now.'
+            : 'No tasks'}
+        </div>
       {/if}
 
       {#if hasTemporaryReveal}
@@ -960,6 +970,7 @@
   {@const expandable = hasChildren(issue)}
   {@const isExpanded = expanded[issue.uid] === true}
   {@const titleId = `kata-issue-title-${issue.uid}`}
+  {@const attention = attentionReasons(issue)}
   <div class="row-frame" style:--task-depth={String(depth)}>
     <button
       class="row issue-row"
@@ -991,6 +1002,13 @@
           <span class="chevron chevron--placeholder" aria-hidden="true"></span>
         {/if}
         <span class="title-text" id={titleId}>{issue.title}</span>
+        {#if attention.length > 0}
+          <span
+            class={`attention-badge attention-${attention[0]!.kind}`}
+            title={attention.map((reason) => reason.text).join('\n')}
+            aria-hidden="true">{attentionBadgeLabels[attention[0]!.kind]}</span
+          >
+        {/if}
       </span>
       {#if columnVisibility.updated}
         <span class="cell cell-updated" title={issue.updated_at}>
@@ -1023,6 +1041,7 @@
         </span>
       {/if}
       <span class="kit-sr-only">
+        {#each attention as reason (reason.text)}<span>{reason.text}. </span>{/each}
         <span>project: {issue.project_name}</span>
         {#if deadline}<span> · Due {shortDate(deadline)}</span>{/if}
         {#if issue.owner}<span> · owner: {issue.owner}</span>{/if}
@@ -1334,6 +1353,45 @@
     white-space: normal;
     overflow-wrap: anywhere;
     word-break: break-word;
+  }
+
+  /* An issue someone is waiting on: a small tinted badge after the title.
+     The reasons are in the tooltip and the row's screen-reader text. */
+  /* Let the badge wrap below the title rather than squeeze it on narrow panes. */
+  .cell-title:has(.attention-badge) {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+
+  .cell-title:has(.attention-badge) .title-text {
+    flex: 1 1 12ch;
+  }
+
+  .attention-badge {
+    flex: 0 0 auto;
+    padding: 0 6px;
+    border-radius: 999px;
+    font-size: var(--font-size-xs);
+    font-weight: var(--font-weight-semibold);
+    line-height: 18px;
+    white-space: nowrap;
+    background: color-mix(in srgb, var(--accent-amber) 16%, transparent);
+    color: color-mix(in srgb, var(--accent-amber) 70%, var(--text-primary));
+  }
+
+  .attention-stuck {
+    background: color-mix(in srgb, var(--accent-red) 14%, transparent);
+    color: color-mix(in srgb, var(--accent-red) 75%, var(--text-primary));
+  }
+
+  .attention-request {
+    background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+    color: color-mix(in srgb, var(--accent-blue) 75%, var(--text-primary));
+  }
+
+  .attention-needs-review {
+    background: color-mix(in srgb, var(--accent-purple) 14%, transparent);
+    color: color-mix(in srgb, var(--accent-purple) 70%, var(--text-primary));
   }
 
   .title-text {

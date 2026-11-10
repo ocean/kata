@@ -1,3 +1,4 @@
+import { buildAttentionGroups } from './attention'
 import { localDateString } from './dates'
 import type {
   KataProjectSummary,
@@ -247,6 +248,9 @@ export function buildKataTaskView(options: BuildKataTaskViewOptions): KataTaskVi
       break
     case 'logbook':
       groups = buildLogbook(options.issues)
+      break
+    case 'attention':
+      groups = buildAttentionGroups(options.issues)
       break
   }
 

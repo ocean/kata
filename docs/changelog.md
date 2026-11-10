@@ -1,7 +1,7 @@
 ---
 title: Changelog
 description: Release history for kata
-last_edited: 2026-11-06
+last_edited: 2026-11-08
 ---
 
 All notable changes to kata, grouped by release. Versioned releases start with
@@ -9,6 +9,11 @@ All notable changes to kata, grouped by release. Versioned releases start with
 
 ## Unreleased
 
+- See which tasks are waiting on you in the Web UI. The new **Needs attention**
+  view collects open tasks an agent marked `stuck` or `needs-human`, tasks with
+  `kata notify` requests, and tasks labelled `needs-review`, grouped by urgency.
+  Rows in every list carry a badge with the reason. See
+  [Navigate projects and collections](guide/web-ui.md#navigate-projects-and-collections).
 - See a project as a board in the Web UI. Switch the header to **Board** to
   lay cards out in Open, label columns you choose, and Done; drag a card, use
   its **Move to…** menu, or press **Alt+←**/**Alt+→** to move it, and select it

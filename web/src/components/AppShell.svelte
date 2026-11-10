@@ -639,6 +639,7 @@
         { name: 'today', label: 'Today' },
         { name: 'delegated', label: 'Delegated' },
         { name: 'scheduled', label: 'Scheduled' },
+        { name: 'attention', label: 'Needs attention' },
         { name: 'all', label: 'All Open' },
         { name: 'logbook', label: 'Logbook' },
       ].find((view) => view.name === viewName)?.label ?? 'Kata'

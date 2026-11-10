@@ -241,10 +241,14 @@ export function snapshotIntentForRoute(
     }
   }
   const resolvedView = route.view ?? (route.projectUID || route.issueUID ? 'all-open' : 'inbox')
-  // Inbox and Scheduled are assembled in the browser from every open issue, so
-  // they share the all-open collection instead of server-side view filters.
+  // Inbox, Scheduled, Needs attention, and the board are assembled in the
+  // browser from every open issue, so they share the all-open collection
+  // instead of server-side view filters.
   const view =
-    route.board || resolvedView === 'inbox' || resolvedView === 'scheduled'
+    route.board ||
+    resolvedView === 'inbox' ||
+    resolvedView === 'scheduled' ||
+    resolvedView === 'attention'
       ? 'all-open'
       : resolvedView
   // The board's Done column needs closed issues beside the open ones.

@@ -5,6 +5,7 @@ import type {
   KataTaskViewName,
   KataTaskViewResponse,
 } from './types'
+import { hasAttention } from './attention'
 import { localDateString } from './dates'
 import { buildKataTaskView, kataViewIncludesDates } from './view'
 
@@ -110,6 +111,7 @@ export function projectKataWorkspaceView(
         issue.project_uid === options.filters.scope.project_uid,
     )
     .filter((issue) => kataViewIncludesDates(options.view, issue, today))
+    .filter((issue) => options.view !== 'attention' || hasAttention(issue))
     .map((issue) => ({ ...issue }))
   if (hasActiveFilters(options.view, options.filters)) {
     return {

@@ -52,6 +52,13 @@ describe('canonical Kata routes', () => {
     expect(serializeRoute(route)).toBe('/kata?view=delegated')
   })
 
+  it('parses and serializes the Needs attention view', () => {
+    const route = parseRoute(new URL('https://daemon.example/kata?view=attention'))
+
+    expect(route).toMatchObject({ kind: 'kata', view: 'attention' })
+    expect(serializeRoute(route)).toBe('/kata?view=attention')
+  })
+
   it('parses and serializes the Scheduled view', () => {
     const route = parseRoute(new URL('https://daemon.example/kata?view=scheduled'))
 
@@ -158,6 +165,7 @@ describe('screen names', () => {
     ['?view=delegated', 'delegated'],
     ['?view=scheduled', 'scheduled'],
     ['?view=logbook', 'logbook'],
+    ['?view=attention', 'attention'],
     [`?scope=${issueUID}`, 'issues'],
     [`?issue=${issueUID}`, 'issue'],
     [`?issue=${issueUID}&graph=1`, 'graph'],
