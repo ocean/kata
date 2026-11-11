@@ -1,3 +1,4 @@
+import { buildAttentionGroups, type AttentionViewer } from './attention'
 import { localDateString } from './dates'
 import type {
   KataProjectSummary,
@@ -13,6 +14,7 @@ interface BuildKataTaskViewOptions {
   projects: KataProjectSummary[]
   today?: string
   fetched_at?: string
+  viewer?: AttentionViewer | undefined
 }
 
 type ProjectLookup = Map<string, KataProjectSummary>
@@ -21,7 +23,7 @@ function issueDate(value: string | undefined): string | undefined {
   return value?.slice(0, 10)
 }
 
-function scheduledDate(issue: KataTaskSummary): string | undefined {
+export function scheduledDate(issue: KataTaskSummary): string | undefined {
   return issue.scheduled_on_date ?? issueDate(issue.metadata.scheduled_on)
 }
 
@@ -247,6 +249,9 @@ export function buildKataTaskView(options: BuildKataTaskViewOptions): KataTaskVi
       break
     case 'logbook':
       groups = buildLogbook(options.issues)
+      break
+    case 'attention':
+      groups = buildAttentionGroups(options.issues, options.viewer)
       break
   }
 

@@ -4,6 +4,16 @@ import type { UISnapshot } from '../state/snapshot'
 import { normalizeKataUISnapshot } from './projection'
 
 describe('normalizeKataUISnapshot', () => {
+  test('carries each collection issue comment count, treating an absent count as none', () => {
+    const wire = snapshot()
+    wire.collection![0] = { ...wire.collection![0]!, comment_count: 4 }
+
+    const projected = normalizeKataUISnapshot(wire)
+
+    expect(projected.issues.find((issue) => issue.uid === 'issue-parent')?.comment_count).toBe(4)
+    expect(projected.issues.find((issue) => issue.uid === 'issue-child')?.comment_count).toBe(0)
+  })
+
   test.each([
     ['blocks hub', 4000, 16000],
     ['hub with back-link', 1000, 8000],

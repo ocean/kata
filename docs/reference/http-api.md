@@ -729,7 +729,12 @@ endpoints published in OpenAPI:
 
 - `GET /api/v1/ui/snapshot` returns one coherent catalog, collection, optional
   selected detail/history/graph projection, capability envelope, durable event
-  cursor, and strong ETag.
+  cursor, and strong ETag. `closed_limit` (1-1000) keeps every matching open
+  issue but returns only that many of the most recently closed matching issues,
+  newest close first, and adds `closed_total` with the number of matching
+  closed issues. The today, upcoming, deadlines, and delegated views reject
+  `closed_limit` with a `validation` error. Each collection issue carries
+  `comment_count`, omitted when the issue has no comments.
 - `GET /api/v1/ui/references` returns bounded projects, owners, labels, and
   qualified issue references for pickers and typeahead. A `q` search returns
   only issue references, with empty projects, owners, and labels. Repeating

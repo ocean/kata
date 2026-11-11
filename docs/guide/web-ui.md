@@ -1,7 +1,7 @@
 ---
 title: Web UI
 description: Browse and manage Kata projects and issues in the daemon-served browser application.
-last_edited: 2026-11-06
+last_edited: 2026-11-10
 ---
 
 # Web UI
@@ -50,8 +50,8 @@ the standalone `kata ui` command keeps its existing route.
 
 ## Navigate projects and collections
 
-The sidebar lists **Inbox**, **Today**, **Delegated**, and **Scheduled**, then
-individual projects:
+The sidebar lists **Inbox**, **Needs attention**, **Today**, **Delegated**, and
+**Scheduled**, then individual projects:
 
 - **Inbox** shows open tasks from every project. A task with a future
   `scheduled_on` stays out of Inbox until that day; a deadline never hides it.
@@ -65,6 +65,26 @@ individual projects:
   which reads
   [attention requests](../reference/cli.md#teammate-requests) for an actor or
   teammate.
+- **Needs attention** shows open tasks that someone is waiting on a human
+  for, grouped by urgency:
+  - **Stuck**: an agent set `work.attention` to `stuck`.
+  - **Needs a human**: an agent set `work.attention` to `needs-human`.
+  - **Requests**: a `kata notify` request, including the reached-date
+    requests the daemon raises for owners. A browser signed in with an account
+    shows requests to that account, like `kata inbox --for <account>`; the
+    owner-local browser has no account and shows requests to anyone. Requests
+    you sent and comment-reply reports, which tell an agent that someone
+    answered its comment, are left out.
+  - **Needs review**: the task carries the `needs-review` label, which the
+    default agent contract asks agents to add when they stop before the work is
+    done.
+
+  A task appears once, in its most urgent group, and each group keeps its own
+  sort. Rows that need attention also carry a small badge in every list; its
+  tooltip and the row's screen-reader text give the reasons, including the
+  agent's `work.attention_msg` and each request's sender and message. See
+  [Orchestration conventions](../reference/metadata.md#orchestration-conventions-work-keys)
+  and [Teammate requests](../reference/metadata.md#teammate-requests-notify-keys).
 - **Today** shows tasks whose start date or deadline has arrived.
 - **Delegated** groups open teammate work by its `author/teammate` attribution.
 - **Scheduled** is the agenda of every open task with a start date or deadline:
@@ -93,6 +113,83 @@ moves into a drawer, and filter controls wrap to fit the list pane, including
 side-by-side detail layouts.
 
 ![Kata Web UI showing a synthetic project and issue hierarchy](/docs/assets/screenshots/web-ui/workspace.png)
+
+## Work on a board
+
+Switch the header's **List**/**Board** control to **Board** to see a project, or
+all open work across projects, as columns of cards. Each card shows its ID,
+priority, title, owner, subtask progress, deadline, and labels. The layout
+stays in the URL as `layout=board`, so a board is bookmarkable. Choosing a
+project in the sidebar keeps the board; choosing Inbox, Today, Delegated, or
+Scheduled returns to the list.
+
+The board has four columns, and each one shows a state Kata already records.
+It adds no workflow vocabulary of its own, so there is nothing to configure:
+
+| Column | Holds | Moving a card here |
+| --- | --- | --- |
+| Open | Open issues nobody has claimed, or whose claim has expired | Releases the owner |
+| In progress | Open issues with an owner whose claim has not expired | Claims the issue for you if nobody owns it |
+| Needs attention | Open issues waiting on a human: an agent's `stuck` or `needs-human` signal, a `kata notify` request, or the `needs-review` label, as in the [Needs attention](#navigate-projects-and-collections) view | Not a move target; see below |
+| Done | Closed issues, newest first; the daemon sends 30 at a time and **Show more** loads the next 30 | Opens the **Complete task** form, which asks for a reason, note, and evidence before closing |
+
+A card in Needs attention shows a badge and the reason, such as **Needs you**
+with the agent's message. Moving it out is how you say you've handled it, and
+clears what put it there, as
+[gated workflows](../workflows/gated-workflows.md#attention-and-reminders)
+describe: `work.attention` becomes `ok` (In progress) or is removed (Open),
+`work.attention_msg` is removed, the requests you were reading are cleared as
+`kata notify --clear` would, and the `needs-review` label comes off. Moving a
+card out of Done reopens it first.
+
+No move puts a card into Needs attention. Attention is the working agent's
+signal, and the [orchestration convention](../operations/agent-orchestration.md)
+has one writer for it. To ask for something instead, choose **Ask…** from the
+card's actions menu. It sends a `kata notify` request to the owner, or to the
+author when nobody owns the card, the same recipient Kata uses for date
+reminders. The card stays where it is.
+
+Blocked and parked work keeps its column, because `kata ready` only filters it
+and does not change who owns it. A card blocked by open issues shows
+**Waiting on** with their IDs, and a card with a future schedule or `someday`
+shows **Starts** with the date, or **Someday**. You can still claim it.
+
+Cards are ordered by priority. Among cards of the same priority, the one with
+the most comments comes first, then the most recently updated, so busy issues
+rise to the top. A comfortable card with comments shows a comment-count pill at
+the right of its detail row.
+
+The board updates live as people and agents change issues. A card that someone
+else moves or adds flashes purple for a moment; your own moves flash blue. Turn
+the purple highlight off or on with the **Highlight changes by others** button
+(the sparkles icon beside the filters); the browser remembers the choice.
+
+An issue with subtasks is an epic: its card carries an **Epic** badge, and
+subtasks in the same column are listed directly under it, indented one step per
+level. A subtask whose epic sits in another column shows that epic's ID beside
+its own. Subtasks still move on their own.
+
+Move a card by dragging it, from its actions menu (**…**), or by focusing it
+and pressing **Alt+←** or **Alt+→**, which skip Needs attention. Arrow keys move focus between cards and
+columns. A moved card flashes briefly where it lands, and a banner offers
+**Undo** for ten seconds when the move only claimed or released the issue;
+**Ctrl+Z** (**⌘Z** on macOS) undoes that move too, except inside a text field.
+Moves that reopen, close, flag, or clear attention have no Undo, because they
+cannot be reversed exactly. Select a card to open its full detail in a side
+drawer; on a phone the drawer fills the screen. **Esc**, the close button, or
+the browser's back gesture closes it.
+
+On a project board, **Add card** at the foot of Open creates an issue in that
+project. Press **Enter** to add and keep typing the next card, or **Esc** to
+close the form. The board across all projects does not offer **Add card**,
+because it has no single project to add to. Read-only and stale sessions show
+the board but do not move cards.
+
+The **Card density** switch beside the filters chooses comfortable cards or
+compact cards, which show only the ID, priority, and title on one line. Done and
+any empty column have a collapse button in their header that shrinks the column
+to a narrow strip with its count; a collapsed column still accepts dropped
+cards. The browser remembers the density and collapsed columns.
 
 ## Manage an issue
 

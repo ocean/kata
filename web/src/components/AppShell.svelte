@@ -7,10 +7,16 @@
     MEDIA,
     IconButton,
     PageHeader,
+    SegmentedControl,
     Tooltip,
     TopBar,
     type TypeaheadOption,
   } from '@kenn-io/kit-ui'
+  import KanbanIcon from '@lucide/svelte/icons/square-kanban'
+  import Rows2Icon from '@lucide/svelte/icons/rows-2'
+  import SparklesIcon from '@lucide/svelte/icons/sparkles'
+  import Rows4Icon from '@lucide/svelte/icons/rows-4'
+  import ListIcon from '@lucide/svelte/icons/list'
   import LayoutPanelLeftIcon from '@lucide/svelte/icons/layout-panel-left'
   import LayoutPanelTopIcon from '@lucide/svelte/icons/layout-panel-top'
   import MonitorIcon from '@lucide/svelte/icons/monitor'
@@ -28,6 +34,8 @@
     defaultKataTaskSearchFilters,
     projectKataWorkspaceView,
   } from '../lib/kata/authority'
+  import { type BoardColumnID, type BoardMovePlan } from '../lib/kata/board'
+  import { attentionViewer } from '../lib/kata/attention'
   import { createKataLinkFilters } from '../lib/kata/linkFilters'
   import { normalizeKataUISnapshot, withPendingSelection } from '../lib/kata/projection'
   import { localDateString } from '../lib/kata/dates'
@@ -38,6 +46,7 @@
     KataTaskEditPatch,
     KataTaskSearchFilters,
     KataTaskStatusFilter,
+    KataTaskSummary,
     KataTaskViewName,
   } from '../lib/kata/types'
   import {
@@ -47,6 +56,7 @@
   } from '../lib/state/snapshot'
   import { defaultPreferences, type Preferences } from '../lib/state/preferences'
   import AccessManagement from './AccessManagement.svelte'
+  import IssueBoard from './IssueBoard.svelte'
   import type { MutationContext, MutationResult } from '../lib/mutations/controller'
   import CredentialAudit from './CredentialAudit.svelte'
   import ProjectSyncStatus from './ProjectSyncStatus.svelte'
@@ -134,6 +144,20 @@
       etag: string,
     ) => Promise<void>
     onDeleteRecurrence: (recurrence: import('../lib/kata/types').KataRecurrence) => Promise<boolean>
+    onMoveBoardIssue?:
+      | ((issue: KataTaskSummary, plan: BoardMovePlan) => Promise<boolean>)
+      | undefined
+    /** Sends a `kata notify` request from a board card. */
+    onAskBoardIssue?:
+      | ((issue: KataTaskSummary, to: string, message: string) => Promise<boolean>)
+      | undefined
+    onCompleteBoardIssue?:
+      | ((issue: KataTaskSummary, request: KataTaskCloseRequest) => Promise<boolean>)
+      | undefined
+    /** Creates an issue in a project from the board's Open column. */
+    onCreateBoardIssue?: ((projectID: number, title: string) => Promise<boolean>) | undefined
+    /** Loads the next page of the board's closed issues from the server. */
+    onShowMoreBoardDone?: (() => void) | undefined
   }
 
   let {
@@ -188,6 +212,11 @@
     onCreateRecurrence,
     onPatchRecurrence,
     onDeleteRecurrence,
+    onMoveBoardIssue = async () => false,
+    onCompleteBoardIssue = async () => false,
+    onAskBoardIssue = undefined,
+    onShowMoreBoardDone = undefined,
+    onCreateBoardIssue = undefined,
   }: Props = $props()
 
   let acceptedProjection = $derived(normalizeKataUISnapshot(snapshot))
@@ -271,6 +300,7 @@
   const mediumScreen = new MediaQuery(MEDIA.medium)
   let linkFilters = $state(createKataLinkFilters('all'))
   let navigationGeneration = $state(0)
+  let viewer = $derived(attentionViewer(snapshot.capabilities.account))
   let credentialRoute = $derived(route.view === 'credentials')
   let settingsRoute = $derived(route.view === 'settings')
   let daemonRoute = $derived(credentialRoute || settingsRoute)
@@ -315,6 +345,7 @@
       snapshot: projection,
       issues: projection.issues,
       today,
+      viewer,
     }),
   )
   let pendingQuery = $state('')
@@ -342,6 +373,12 @@
       ? projection.projects.find((project) => project.uid === scope.project_uid)
       : undefined
   })
+  let boardRoute = $derived(route.board === true && !daemonRoute)
+  let boardIssues = $derived(
+    selectedProject
+      ? projection.issues.filter((issue) => issue.project_uid === selectedProject!.uid)
+      : projection.issues,
+  )
   let selectedCommentUID = $state<string | undefined>()
   let returnComment = $state<{ issueUID: string; commentUID: string } | undefined>()
   let selectedIssueUID = $derived(route.issueUID ?? null)
@@ -382,6 +419,16 @@
       (scopedAuthority ? 'This credential cannot create projects.' : pendingReason),
   )
 
+  function toggleBoardColumn(columnID: BoardColumnID): void {
+    const collapsed = preferences.collapsedBoardColumns.includes(columnID)
+    onPreferencesChange({
+      ...preferences,
+      collapsedBoardColumns: collapsed
+        ? preferences.collapsedBoardColumns.filter((id) => id !== columnID)
+        : [...preferences.collapsedBoardColumns, columnID],
+    })
+  }
+
   function navigate(next: AppRoute): void {
     const query = (next.filters.text ?? '').trim()
     if (query !== countedQuery) countedQuery = ''
@@ -403,6 +450,8 @@
       kind: 'kata',
       view: systemViewName(name),
       graph: false,
+      // The board spans a project or all open work, not the dated system views.
+      ...(route.board && name === 'all' ? { board: true as const } : {}),
       filters: emptyShareableFilters(),
     })
   }
@@ -413,6 +462,7 @@
       kind: 'kata',
       projectUID,
       graph: false,
+      ...(route.board ? { board: true as const } : {}),
       filters: emptyShareableFilters(),
     })
   }
@@ -474,11 +524,33 @@
   }
 
   function openGraph(issueUID: string): void {
-    navigate({
+    const next: AppRoute = {
       ...withResolvedView(filterRoute),
       issueUID,
       graph: true,
-    })
+    }
+    delete next.board
+    navigate(next)
+  }
+
+  function closeIssueDrawer(): void {
+    const next = { ...route }
+    delete next.issueUID
+    navigate(next)
+  }
+
+  function setLayout(layout: string): void {
+    const next: AppRoute = { ...route, graph: false }
+    if (layout === 'board') {
+      next.board = true
+      // The board covers a project or all open work; dated views fall back to All Open.
+      if (next.view && next.view !== 'all-open' && !next.projectUID) next.view = 'all-open'
+      else if (next.view && next.projectUID) delete next.view
+    } else {
+      delete next.board
+    }
+    // Status filters mean different defaults in each layout.
+    navigate({ ...next, filters: { ...next.filters, status: [] } })
   }
 
   function closeGraph(): void {
@@ -549,6 +621,8 @@
 
   function viewNameForRoute(current: AppRoute): KataTaskViewName {
     if (current.view === 'credentials' || current.view === 'settings') return 'all'
+    // The board spans a project or all open work, never a dated system view.
+    if (current.board) return 'all'
     if (current.view) return current.view === 'all-open' ? 'all' : current.view
     return current.projectUID || current.issueUID ? 'all' : 'inbox'
   }
@@ -562,6 +636,7 @@
     currentView: KataTaskViewName,
   ): KataTaskSearchFilters {
     const defaults = defaultKataTaskSearchFilters(currentView)
+    if (current.board) defaults.status = 'all'
     return {
       scope: current.projectUID
         ? { kind: 'project', project_uid: current.projectUID }
@@ -590,7 +665,7 @@
     currentView: KataTaskViewName,
     changed: keyof KataTaskSearchFilters,
   ): ShareableFilters {
-    const defaultStatus = defaultKataTaskSearchFilters(currentView).status
+    const defaultStatus = route.board ? 'all' : defaultKataTaskSearchFilters(currentView).status
     const result: ShareableFilters = {
       status:
         changed === 'status'
@@ -628,6 +703,7 @@
         { name: 'today', label: 'Today' },
         { name: 'delegated', label: 'Delegated' },
         { name: 'scheduled', label: 'Scheduled' },
+        { name: 'attention', label: 'Needs attention' },
         { name: 'all', label: 'All Open' },
         { name: 'logbook', label: 'Logbook' },
       ].find((view) => view.name === viewName)?.label ?? 'Kata'
@@ -640,13 +716,14 @@
   <button
     type="button"
     class="accent-button header-action"
+    aria-label="New task"
     aria-disabled={newTaskBlockedReason ? 'true' : undefined}
     aria-describedby={newTaskBlockedReason ? newTaskReasonID : undefined}
     title={newTaskBlockedReason ? undefined : 'New task'}
     onclick={beginNewTask}
   >
     <PlusIcon size={13} strokeWidth={1.9} aria-hidden="true" />
-    <span>New task</span>
+    <span class="header-action-label">New task</span>
   </button>
 {/snippet}
 
@@ -756,10 +833,33 @@
             <MonitorIcon size={15} strokeWidth={1.8} aria-hidden="true" />
           {/if}
         </IconButton>
+        {#if !daemonRoute}
+          <SegmentedControl
+            class="layout-toggle"
+            ariaLabel="Layout"
+            value={boardRoute ? 'board' : 'list'}
+            options={[
+              { value: 'list', label: 'List', title: 'List and detail' },
+              { value: 'board', label: 'Board', title: 'Columns of cards' },
+            ]}
+            onchange={setLayout}
+          >
+            {#snippet segment(option)}
+              <span class="layout-segment">
+                {#if option.value === 'board'}
+                  <KanbanIcon size={14} strokeWidth={1.8} aria-hidden="true" />
+                {:else}
+                  <ListIcon size={14} strokeWidth={1.8} aria-hidden="true" />
+                {/if}
+                <span class="layout-segment-label">{option.label}</span>
+              </span>
+            {/snippet}
+          </SegmentedControl>
+        {/if}
         <IconButton ariaLabel="Settings" title="Settings" onclick={openSettings}>
           <SettingsIcon size={15} strokeWidth={1.8} aria-hidden="true" />
         </IconButton>
-        {#if !daemonRoute}
+        {#if !daemonRoute && !boardRoute}
           <IconButton
             ariaLabel={preferences.splitDirection === 'vertical'
               ? 'Switch to side-by-side layout'
@@ -775,6 +875,8 @@
               <LayoutPanelTopIcon size={15} strokeWidth={1.8} aria-hidden="true" />
             {/if}
           </IconButton>
+        {/if}
+        {#if !daemonRoute}
           {#if newTaskBlockedReason}
             <Tooltip text={newTaskBlockedReason} align="end">
               {@render newTaskButton()}
@@ -838,21 +940,38 @@
         {#if mutationMessage}
           <p class="mutation-message" role="alert">{mutationMessage}</p>
         {/if}
-        <SplitLayout
-          orientation={preferences.splitDirection}
-          primarySize={preferences.splitSize}
-          minPrimary={preferences.splitDirection === 'vertical' ? 220 : 320}
-          minSecondary={preferences.splitDirection === 'vertical' ? 220 : 360}
-          responsiveBreakpoint={700}
-          ariaLabel="Resize Kata panes"
-          onResize={resizeSplit}
-          primary={listPane}
-          secondary={route.issueUID ? detailPane : undefined}
-        />
+        {#if boardRoute}
+          {@render boardPane()}
+        {:else}
+          <SplitLayout
+            orientation={preferences.splitDirection}
+            primarySize={preferences.splitSize}
+            minPrimary={preferences.splitDirection === 'vertical' ? 220 : 320}
+            minSecondary={preferences.splitDirection === 'vertical' ? 220 : 360}
+            responsiveBreakpoint={700}
+            ariaLabel="Resize Kata panes"
+            onResize={resizeSplit}
+            primary={listPane}
+            secondary={route.issueUID ? detailPane : undefined}
+          />
+        {/if}
       {/if}
     </div>
   </div>
 </section>
+
+{#if boardRoute && route.issueUID}
+  <DetailDrawer
+    title={projection.selected_detail?.issue.title ?? 'Issue'}
+    ariaLabel="Issue detail"
+    width="min(780px, 100vw)"
+    onclose={closeIssueDrawer}
+  >
+    <div class="drawer-detail">
+      {@render detailPane()}
+    </div>
+  </DetailDrawer>
+{/if}
 
 {#if mobileNavigationOpen}
   <DetailDrawer
@@ -891,6 +1010,7 @@
         onSubmitSearch={submitSearch}
       />
       <IssueCollection
+        {viewer}
         now={connectionNow}
         resultsKey={JSON.stringify([route.projectUID ?? null, route.filters])}
         {navigationGeneration}
@@ -911,6 +1031,79 @@
         empty={!loading && projection.projects.length === 0 ? noProjects : undefined}
       />
     {/if}
+  </div>
+{/snippet}
+
+{#snippet boardPane()}
+  <div class="list-column board-pane">
+    <div class="board-toolbar">
+      <IssueFilters
+        filters={searchFilters}
+        projects={projection.projects}
+        onChange={updateFilters}
+        onSubmitSearch={submitSearch}
+      />
+      <SegmentedControl
+        class="density-toggle"
+        ariaLabel="Card density"
+        value={preferences.boardCompact ? 'compact' : 'comfortable'}
+        options={[
+          { value: 'comfortable', label: 'Comfortable cards', title: 'Comfortable cards' },
+          { value: 'compact', label: 'Compact cards', title: 'Compact cards: one line each' },
+        ]}
+        onchange={(value) =>
+          onPreferencesChange({ ...preferences, boardCompact: value === 'compact' })}
+      >
+        {#snippet segment(option)}
+          {#if option.value === 'compact'}
+            <Rows4Icon size={14} strokeWidth={1.8} aria-hidden="true" />
+          {:else}
+            <Rows2Icon size={14} strokeWidth={1.8} aria-hidden="true" />
+          {/if}
+        {/snippet}
+      </SegmentedControl>
+      <IconButton
+        ariaLabel="Highlight changes by others"
+        ariaPressed={preferences.boardHighlightRemote}
+        title={preferences.boardHighlightRemote
+          ? 'Highlighting cards others move or add (click to turn off)'
+          : 'Not highlighting cards others move or add (click to turn on)'}
+        onclick={() =>
+          onPreferencesChange({
+            ...preferences,
+            boardHighlightRemote: !preferences.boardHighlightRemote,
+          })}
+      >
+        <SparklesIcon size={15} strokeWidth={1.8} aria-hidden="true" />
+      </IconButton>
+    </div>
+    <IssueBoard
+      issues={boardIssues}
+      {selectedIssueUID}
+      showProject={!selectedProject}
+      {loading}
+      moveBlockedReason={writeBlockedReason ??
+        (scopedAuthority ? 'This credential can only change one task.' : undefined)}
+      onOpenIssue={(issue) => selectIssue(issue.uid)}
+      onMoveIssue={onMoveBoardIssue}
+      onCompleteIssue={onCompleteBoardIssue}
+      onAskIssue={onAskBoardIssue}
+      {viewer}
+      doneTotal={snapshot.closed_total}
+      onShowMoreDone={onShowMoreBoardDone}
+      compact={preferences.boardCompact}
+      highlightRemoteChanges={preferences.boardHighlightRemote}
+      scopeKey={`${selectedProject?.uid ?? 'all'}|${JSON.stringify(route.filters)}`}
+      onAddCard={selectedProject &&
+      onCreateBoardIssue &&
+      !readOnly &&
+      snapshot.capabilities.writable &&
+      !scopedAuthority
+        ? (title) => onCreateBoardIssue(selectedProject!.id, title)
+        : undefined}
+      collapsedColumns={preferences.collapsedBoardColumns}
+      onToggleColumn={toggleBoardColumn}
+    />
   </div>
 {/snippet}
 
@@ -1132,12 +1325,51 @@
     container-name: list-pane;
   }
 
+  .board-pane {
+    background: var(--bg-primary);
+  }
+
+  .board-toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+    padding-inline-end: var(--space-4);
+    border-bottom: 1px solid var(--border-default);
+    background: var(--bg-surface);
+  }
+
+  .board-toolbar > :global(:first-child) {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .board-toolbar :global(.kata-search-panel) {
+    border-bottom: 0;
+  }
+
+  .layout-segment {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
   .detail-column {
     min-width: 0;
     width: 100%;
     min-height: 0;
     display: flex;
     border-left: 1px solid var(--border-default);
+  }
+
+  /* In the board's drawer the detail has no list beside it, so no divider. */
+  .drawer-detail {
+    display: flex;
+    min-height: 100%;
+  }
+
+  .drawer-detail .detail-column {
+    border-left: 0;
   }
 
   .detail-unavailable {
@@ -1173,6 +1405,18 @@
 
     .mobile-navigation-trigger {
       display: inline-flex;
+    }
+
+    .layout-segment-label {
+      display: none;
+    }
+  }
+
+  /* Phones: the header keeps every control by showing icons only; the
+     button's aria-label keeps its name. */
+  @media (max-width: 640px) {
+    .header-action-label {
+      display: none;
     }
   }
 </style>

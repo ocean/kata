@@ -1,5 +1,6 @@
 <script lang="ts">
   import AlarmClockIcon from '@lucide/svelte/icons/alarm-clock'
+  import BellRingIcon from '@lucide/svelte/icons/bell-ring'
   import InboxIcon from '@lucide/svelte/icons/inbox'
   import KeyRoundIcon from '@lucide/svelte/icons/key-round'
   import PlusIcon from '@lucide/svelte/icons/plus'
@@ -56,6 +57,7 @@
     icon: typeof InboxIcon
   }> = [
     { name: 'inbox', label: 'Inbox', icon: InboxIcon },
+    { name: 'attention', label: 'Needs attention', icon: BellRingIcon },
     { name: 'today', label: 'Today', icon: StarIcon },
     { name: 'delegated', label: 'Delegated', icon: UsersIcon },
     { name: 'scheduled', label: 'Scheduled', icon: AlarmClockIcon },
@@ -92,7 +94,7 @@
   // disagrees with the rows beneath it (Inbox holds future start dates back).
   function viewCount(name: KataTaskViewName): number | undefined {
     if (
-      (name === 'inbox' || name === 'today') &&
+      (name === 'inbox' || name === 'today' || name === 'attention') &&
       currentView.name === name &&
       searchFilters.scope.kind === 'all'
     ) {

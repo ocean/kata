@@ -42,6 +42,51 @@ describe('origin-local preferences', () => {
     })
   })
 
+  it('remembers compact board cards and collapsed board columns', () => {
+    const storage = new MapStorage()
+    savePreferences(
+      {
+        ...defaultPreferences,
+        boardCompact: true,
+        collapsedBoardColumns: ['done', 'label:review', 'done'],
+      },
+      storage,
+    )
+
+    expect(loadPreferences(storage)).toMatchObject({
+      boardCompact: true,
+      collapsedBoardColumns: ['done', 'label:review'],
+    })
+  })
+
+  it('starts with comfortable cards, every board column open, and remote highlights on', () => {
+    expect(loadPreferences(new MapStorage())).toMatchObject({
+      boardCompact: false,
+      collapsedBoardColumns: [],
+      boardHighlightRemote: true,
+    })
+  })
+
+  it('remembers turning remote-change highlights off', () => {
+    const storage = new MapStorage()
+    savePreferences({ ...defaultPreferences, boardHighlightRemote: false }, storage)
+
+    expect(loadPreferences(storage).boardHighlightRemote).toBe(false)
+  })
+
+  it('ignores malformed board settings', () => {
+    const storage = new MapStorage()
+    storage.setItem(
+      'kata.preferences.v1',
+      JSON.stringify({ boardCompact: 'yes', collapsedBoardColumns: [1, 2] }),
+    )
+
+    expect(loadPreferences(storage)).toMatchObject({
+      boardCompact: false,
+      collapsedBoardColumns: [],
+    })
+  })
+
   it('reports degraded origins without copying preference state', () => {
     expect(originStabilityWarning(false)).toContain('temporary browser origin')
     expect(originStabilityWarning(true)).toBeUndefined()

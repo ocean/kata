@@ -5,6 +5,7 @@ export const systemViews = [
   'today',
   'delegated',
   'scheduled',
+  'attention',
   'all-open',
   'logbook',
 ] as const
@@ -31,6 +32,8 @@ export type KataRoute =
       projectUID?: string
       issueUID?: string
       graph: boolean
+      /** Column board instead of the list; an issue opens in a drawer. */
+      board?: true
     })
   | {
       kind: 'route-error'
@@ -71,12 +74,14 @@ export function parseRoute(url: URL, routePath = applicationRoutePath()): KataRo
     if (issueUID.length > 0 && issueUID.length < 26) routeError.searchRef = issueUID
     return routeError
   }
+  const board = url.searchParams.get('layout') === 'board'
   return {
     kind: 'kata',
     ...(normalizedView ? { view: normalizedView } : {}),
     ...(projectUID ? { projectUID } : {}),
     ...(issueUID ? { issueUID } : {}),
-    graph: Boolean(issueUID) && url.searchParams.get('graph') === '1',
+    graph: !board && Boolean(issueUID) && url.searchParams.get('graph') === '1',
+    ...(board ? { board: true as const } : {}),
     filters,
   }
 }
@@ -87,7 +92,8 @@ export function serializeRoute(route: KataRoute, routePath = applicationRoutePat
   if (route.view) query.set('view', route.view)
   if (route.projectUID) query.set('scope', route.projectUID)
   if (route.issueUID) query.set('issue', route.issueUID)
-  if (route.graph && route.issueUID) query.set('graph', '1')
+  if (route.graph && route.issueUID && !route.board) query.set('graph', '1')
+  if (route.board) query.set('layout', 'board')
   for (const [name, values] of [
     ['label', route.filters.label],
     ['owner', route.filters.owner],
@@ -133,6 +139,7 @@ export function screenNameForRoute(route: KataRoute): string | undefined {
   if (route.kind === 'route-error') return undefined
   if (route.view === 'credentials' || route.view === 'settings') return route.view
   if (route.issueUID) return route.graph ? 'graph' : 'issue'
+  if (route.board) return 'board'
   if (route.view) return route.view === 'all-open' ? 'issues' : route.view
   return route.projectUID ? 'issues' : 'inbox'
 }

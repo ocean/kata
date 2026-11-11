@@ -2293,6 +2293,152 @@ describe('App', () => {
     expect(await mutation.json()).toEqual({ actor: 'kata-web', patch: { role: 'inbox' } })
   })
 
+  it('adds a board card to the Open column of the project', async () => {
+    history.replaceState(null, '', '/kata?scope=01J00000000000000000000002&layout=board#direct=1')
+    sessionStorage.setItem(
+      'kata.web.session.v1',
+      JSON.stringify({ session: 'tab-session', csrf: 'tab-csrf' }),
+    )
+    const accepted = snapshot()
+    const requests: Request[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = requestOf(input, init)
+        requests.push(request)
+        if (request.method === 'POST' && request.url.endsWith('/api/v1/projects/7/issues')) {
+          return new Response(JSON.stringify({ issue: accepted.collection![0], changed: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify(accepted), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', ETag: `"snapshot-${requests.length}"` },
+        })
+      }),
+    )
+
+    render(App)
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Add card to Open' }))
+    const input = screen.getByRole('textbox', { name: 'New card in Open' })
+    await fireEvent.input(input, { target: { value: 'Write the board docs' } })
+    await fireEvent.keyDown(input, { key: 'Enter' })
+
+    const create = await waitFor(() => {
+      const found = requests.find(
+        (request) => request.method === 'POST' && request.url.endsWith('/api/v1/projects/7/issues'),
+      )
+      expect(found).toBeDefined()
+      return found!
+    })
+    // Identity-mode authority attributes the write itself, so no actor is sent.
+    expect(await create.json()).toEqual({ title: 'Write the board docs' })
+    expect(create.headers.get('Idempotency-Key')).toBeTruthy()
+  })
+
+  it('clears attention and claims a card moved from Needs attention to In progress', async () => {
+    history.replaceState(null, '', '/kata?scope=01J00000000000000000000002&layout=board#direct=1')
+    sessionStorage.setItem(
+      'kata.web.session.v1',
+      JSON.stringify({ session: 'tab-session', csrf: 'tab-csrf' }),
+    )
+    const accepted = snapshot()
+    accepted.collection![0]!.metadata = {
+      'work.attention': 'needs-human',
+      'work.attention_msg': 'Pick a design',
+    }
+    const issuePath = '/api/v1/projects/7/issues/01J00000000000000000000001'
+    const requests: Request[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = requestOf(input, init)
+        requests.push(request)
+        if (request.method === 'POST' && request.url.includes(issuePath)) {
+          return new Response(JSON.stringify({ issue: accepted.collection![0], changed: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify(accepted), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', ETag: `"snapshot-${requests.length}"` },
+        })
+      }),
+    )
+
+    render(App)
+
+    const card = await screen.findByRole('button', { name: 'Example issue' })
+    await fireEvent.keyDown(card, { key: 'ArrowLeft', altKey: true })
+
+    const writes = await waitFor(() => {
+      const found = requests.filter(
+        (request) => request.method === 'POST' && request.url.includes(issuePath),
+      )
+      expect(found).toHaveLength(2)
+      return found
+    })
+    expect(new URL(writes[0]!.url).pathname).toBe(`${issuePath}/metadata`)
+    expect(await writes[0]!.json()).toEqual({
+      patch: { 'work.attention': 'ok', 'work.attention_msg': null },
+    })
+    expect(new URL(writes[1]!.url).pathname).toBe(`${issuePath}/actions/claim`)
+  })
+
+  it('asks the owner of a board card through a kata notify request', async () => {
+    history.replaceState(null, '', '/kata?scope=01J00000000000000000000002&layout=board#direct=1')
+    sessionStorage.setItem(
+      'kata.web.session.v1',
+      JSON.stringify({ session: 'tab-session', csrf: 'tab-csrf' }),
+    )
+    const accepted = snapshot()
+    Object.assign(accepted.collection![0]!, { owner: 'agent-a' })
+    const notifyPath = '/api/v1/projects/7/issues/01J00000000000000000000001/notifications'
+    const requests: Request[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = requestOf(input, init)
+        requests.push(request)
+        if (request.method === 'POST' && new URL(request.url).pathname === notifyPath) {
+          return new Response(JSON.stringify({ issue: accepted.collection![0], changed: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify(accepted), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', ETag: `"snapshot-${requests.length}"` },
+        })
+      }),
+    )
+
+    render(App)
+
+    await fireEvent.click(await screen.findByRole('button', { name: 'Actions for Example issue' }))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Ask agent-a…' }))
+    await fireEvent.input(screen.getByRole('textbox', { name: 'What do you need?' }), {
+      target: { value: 'Is the parser change ready for review?' },
+    })
+    await fireEvent.click(screen.getByRole('button', { name: 'Send request' }))
+
+    const notify = await waitFor(() => {
+      const found = requests.find(
+        (request) => request.method === 'POST' && new URL(request.url).pathname === notifyPath,
+      )
+      expect(found).toBeDefined()
+      return found!
+    })
+    // Identity-mode authority attributes the request itself, so no actor is sent.
+    expect(await notify.json()).toEqual({
+      to: 'agent-a',
+      message: 'Is the parser change ready for review?',
+    })
+  })
+
   it('changes the Inbox project from New task through one designation request', async () => {
     history.replaceState(null, '', '/kata#direct=1')
     sessionStorage.setItem(
